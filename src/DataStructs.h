@@ -29,6 +29,12 @@ enum FlitType {
     FLIT_TYPE_HEAD, FLIT_TYPE_BODY, FLIT_TYPE_TAIL
 };
 
+// PacketType -- Packet type for SpMM accelerator
+enum PacketType {
+    PACKET_TYPE_REQUEST,   // PE -> Memory tile (2 flits)
+    PACKET_TYPE_RESPONSE   // Memory tile -> PE (8 flits)
+};
+
 // Payload -- Payload definition
 struct Payload {
     sc_uint<32> data;	// Bus for the data to be exchanged
@@ -46,9 +52,14 @@ struct Packet {
     int size;
     int flit_left;		// Number of remaining flits inside the packet
     bool use_low_voltage_path;
+    int feature_id;		// Feature ID for trace-based traffic
+    PacketType packet_type;	// REQUEST or RESPONSE
 
     // Constructors
-    Packet() { }
+    Packet() { 
+        feature_id = -1; 
+        packet_type = PACKET_TYPE_REQUEST;  // Default to REQUEST
+    }
 
     Packet(const int s, const int d, const int vc, const double ts, const int sz) {
 	make(s, d, vc, ts, sz);
@@ -62,6 +73,8 @@ struct Packet {
 	size = sz;
 	flit_left = sz;
 	use_low_voltage_path = false;
+	feature_id = -1;
+	packet_type = PACKET_TYPE_REQUEST;  // Default to REQUEST
     }
 };
 
@@ -127,6 +140,8 @@ struct Flit {
     double timestamp;		// Unix timestamp at packet generation
     int hop_no;			// Current number of hops from source to destination
     bool use_low_voltage_path;
+    int feature_id;		// Feature ID for trace-based traffic
+    PacketType packet_type;	// REQUEST or RESPONSE
 
     int hub_relay_node;
 

@@ -79,6 +79,7 @@ void loadConfiguration() {
     GlobalParams::traffic_distribution = readParam<string>(config, "traffic_distribution");
     GlobalParams::traffic_table_filename = readParam<string>(config, "traffic_table_filename");
     GlobalParams::traffic_hardcoded_filename = readParam<string>(config, "traffic_hardcoded_filename");
+    GlobalParams::trace_dir = readParam<string>(config, "trace_dir", "");
     GlobalParams::clock_period_ps = readParam<int>(config, "clock_period_ps");
     GlobalParams::simulation_time = readParam<int>(config, "simulation_time");
     GlobalParams::n_virtual_channels = readParam<int>(config, "n_virtual_channels");

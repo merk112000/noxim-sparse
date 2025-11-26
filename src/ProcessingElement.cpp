@@ -9,6 +9,9 @@
  */
 
 #include "ProcessingElement.h"
+#include <fstream>
+#include <sstream>
+#include <iostream>
 
 int ProcessingElement::randInt(int min, int max)
 {
@@ -21,10 +24,27 @@ void ProcessingElement::rxProcess()
     if (reset.read()) {
 	ack_rx.write(0);
 	current_level_rx = 0;
+	if (memory_controller) {
+	    memory_controller->reset();
+	}
     } else {
 	if (req_rx.read() == 1 - current_level_rx) {
 	    Flit flit_tmp = flit_rx.read();
 	    current_level_rx = 1 - current_level_rx;	// Negate the old value for Alternating Bit Protocol (ABP)
+	    
+	    // If this is a memory tile and we received a REQUEST HEAD flit
+	    if (is_memory_tile && 
+	        flit_tmp.packet_type == PACKET_TYPE_REQUEST && 
+	        flit_tmp.flit_type == FLIT_TYPE_HEAD) {
+	        handleIncomingRequest(flit_tmp);
+	    }
+	    
+	    // If this is a compute PE and we received a RESPONSE HEAD flit, return credit
+	    if (!is_memory_tile && 
+	        flit_tmp.packet_type == PACKET_TYPE_RESPONSE && 
+	        flit_tmp.flit_type == FLIT_TYPE_HEAD) {
+	        returnCredit(flit_tmp.src_id);
+	    }
 	}
 	ack_rx.write(current_level_rx);
     }
@@ -38,14 +58,41 @@ void ProcessingElement::txProcess()
 	transmittedAtPreviousCycle = false;
     } else {
 
-    if(GlobalParams::traffic_distribution != TRAFFIC_HARDCODED) {
-		Packet packet;
-		if (canShot(packet)) {
-			packet_queue.push(packet);
-			transmittedAtPreviousCycle = true;
-		} else {
-			transmittedAtPreviousCycle = false;
-		}
+    // Lazy initialization of memory controller and credits (local_id now available)
+    if (memory_controller == nullptr) {
+        is_memory_tile = isMemoryTile(local_id);
+        if (is_memory_tile) {
+            memory_controller = new MemoryController(local_id);
+        } else {
+            // Compute PEs need to initialize credits for memory tiles
+            initMemoryCredits();
+            // Load trace file immediately for compute PEs
+            if (GlobalParams::traffic_distribution == TRAFFIC_TRACE_BASED) {
+                loadTraceFile();
+            }
+        }
+    }
+
+    // Memory tiles generate RESPONSE packets
+    if (is_memory_tile) {
+        // No NI queue limit for memory tiles - allows unbounded growth for deadlock-free operation
+        Packet packet;
+        if (canShotResponse(packet)) {
+            packet_queue.push(packet);
+            transmittedAtPreviousCycle = true;
+        } else {
+            transmittedAtPreviousCycle = false;
+        }
+    }
+    // Compute PEs generate REQUEST packets (trace-based or other traffic)
+    else if(GlobalParams::traffic_distribution != TRAFFIC_HARDCODED) {
+        Packet packet;
+        if (canShot(packet)) {
+            packet_queue.push(packet);
+            transmittedAtPreviousCycle = true;
+        } else {
+            transmittedAtPreviousCycle = false;
+        }
     } else if(traffic_cycle < traffic_hardcoded->num_cycles()) {
 		double now = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
 		
@@ -94,6 +141,8 @@ Flit ProcessingElement::nextFlit()
     flit.sequence_length = packet.size;
     flit.hop_no = 0;
     //  flit.payload     = DEFAULT_PAYLOAD;
+    flit.feature_id = packet.feature_id;  // Propagate feature_id from packet to flit
+    flit.packet_type = packet.packet_type; // Propagate packet type
 
     flit.hub_relay_node = NOT_VALID;
 
@@ -137,7 +186,14 @@ bool ProcessingElement::canShot(Packet & packet)
 
     double now = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
 
-    if (GlobalParams::traffic_distribution != TRAFFIC_TABLE_BASED) {
+    // Trace-based traffic mode - deterministic injection from trace files
+    if (GlobalParams::traffic_distribution == TRAFFIC_TRACE_BASED) {
+        shot = canShotTrace(packet);
+        if (shot) {
+            // Successfully scheduled trace event - advance to next
+            next_event_idx++;
+        }
+    } else if (GlobalParams::traffic_distribution != TRAFFIC_TABLE_BASED) {
 	if (!transmittedAtPreviousCycle)
 	    threshold = GlobalParams::packet_injection_rate;
 	else
@@ -514,5 +570,294 @@ int ProcessingElement::getRandomSize()
 unsigned int ProcessingElement::getQueueSize() const
 {
     return packet_queue.size();
+}
+
+bool ProcessingElement::isMemoryTile(int id)
+{
+    // Memory tile IDs for a 4x4 mesh (16 total tiles)
+    // ID layout in 4x4 mesh (row-major: id = x + y * mesh_dim_x):
+    //  0  1  2  3
+    //  4  5  6  7
+    //  8  9 10 11
+    // 12 13 14 15
+    //
+    // Memory tiles (8 total - 2 intermediate tiles on each side):
+    // Left side: 4, 8    Right side: 7, 11
+    // Top side: 1, 2     Bottom side: 13, 14
+    // Compute PEs (8 total): 0, 3, 5, 6, 9, 10, 12, 15
+    
+    static const int MEMORY_TILE_IDS[] = {1, 2, 4, 7, 8, 11, 13, 14};
+    static const int NUM_MEMORY_TILES = 8;
+    
+    for (int i = 0; i < NUM_MEMORY_TILES; i++) {
+        if (id == MEMORY_TILE_IDS[i])
+            return true;
+    }
+    return false;
+}
+
+int ProcessingElement::getTracePeId(int noxim_id)
+{
+    // Map Noxim mesh tile ID to trace PE ID
+    // For compute PEs, they map directly to their trace file number
+    // Memory tiles (4, 7, 8, 11) should not call this function
+    //
+    // Noxim ID -> Trace PE ID mapping:
+    //  0 -> 0    1 -> 1    2 -> 2    3 -> 3
+    //  4 -> MEM  5 -> 5    6 -> 6    7 -> MEM
+    //  8 -> MEM  9 -> 9   10 -> 10  11 -> MEM
+    // 12 -> 12  13 -> 13  14 -> 14  15 -> 15
+    
+    // Since compute PEs use the same ID in both Noxim and traces,
+    // we can just return the noxim_id directly for compute PEs
+    return noxim_id;
+}
+
+void ProcessingElement::loadTraceFile()
+{
+    // Only load trace file if TRAFFIC_TRACE_BASED mode is enabled
+    if (GlobalParams::traffic_distribution != TRAFFIC_TRACE_BASED)
+        return;
+
+    // Check if trace_dir is set
+    if (GlobalParams::trace_dir.empty()) {
+        cerr << "Warning: TRAFFIC_TRACE_BASED mode enabled but trace_dir not specified" << endl;
+        return;
+    }
+
+    // Only load traces for actual mesh tiles, not hubs or other special PEs
+    // In a mesh topology, valid tile IDs are 0 to (mesh_dim_x * mesh_dim_y - 1)
+    int max_tile_id = GlobalParams::mesh_dim_x * GlobalParams::mesh_dim_y - 1;
+    if (local_id > max_tile_id) {
+        // This is likely a hub or wireless component PE - skip trace loading
+        return;
+    }
+
+    // Memory tiles do not inject traffic - they only receive and respond
+    if (isMemoryTile(local_id)) {
+        cout << "Tile " << local_id << " is a memory controller - no trace injection" << endl;
+        return;
+    }
+    
+    // Avoid reloading if already loaded
+    if (!trace_events.empty()) {
+        return;
+    }
+
+    // Get the trace PE ID for this compute PE
+    int trace_pe_id = getTracePeId(local_id);
+    
+    // Build trace filename: trace_dir/pe_<trace_pe_id>.trace
+    string trace_filename = GlobalParams::trace_dir + "/pe_" + to_string(trace_pe_id) + ".trace";
+
+    ifstream trace_file(trace_filename);
+    if (!trace_file.is_open()) {
+        cout << "Warning: Compute PE " << local_id << " (trace_id=" << trace_pe_id << ") - trace file not found: " << trace_filename << endl;
+        cout << "         This PE will not inject any packets." << endl;
+        return;
+    }
+
+    cout << "Compute PE " << local_id << " (trace_id=" << trace_pe_id << ") loading trace from: " << trace_filename << endl;
+
+    string line;
+    int line_num = 0;
+    while (getline(trace_file, line)) {
+        line_num++;
+        
+        // Skip empty lines and comments
+        if (line.empty() || line[0] == '#' || line[0] == '%')
+            continue;
+
+        // Parse trace line: cycle src dst feature_id
+        istringstream iss(line);
+        TraceEvent event;
+        
+        if (iss >> event.cycle >> event.src >> event.dst >> event.feature_id) {
+            // Sanity check: src should match local_id
+            if (event.src != local_id) {
+                cerr << "Error: PE " << local_id << " trace file line " << line_num 
+                     << " has mismatched src=" << event.src << endl;
+                continue;
+            }
+            
+            trace_events.push_back(event);
+        } else {
+            cerr << "Warning: PE " << local_id << " - malformed line " << line_num 
+                 << " in trace file" << endl;
+        }
+    }
+
+    trace_file.close();
+    
+    cout << "Compute PE " << local_id << " (trace_id=" << trace_pe_id << ") loaded " << trace_events.size() << " trace events" << endl;
+}
+
+bool ProcessingElement::canShotTrace(Packet & packet)
+{
+    // Memory tiles do not inject trace-based traffic
+    if (isMemoryTile(local_id))
+        return false;
+
+    // If we've exhausted all trace events, no more injections
+    if (next_event_idx >= trace_events.size())
+        return false;
+
+    // Get current cycle (absolute simulation time)
+    uint64_t cur_cycle = static_cast<uint64_t>(
+        sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
+    
+    // Adjust for reset/warmup time - trace cycles are relative to actual simulation start
+    // Subtract reset_time to get the cycle relative to simulation start
+    uint64_t sim_cycle = (cur_cycle > GlobalParams::reset_time) ? 
+                         (cur_cycle - GlobalParams::reset_time) : 0;
+
+    // Get the next event
+    const TraceEvent& event = trace_events[next_event_idx];
+
+    // Inject when simulation cycle reaches or passes the trace event cycle
+    // This handles cases where NI queue was full and we missed exact cycle
+    if (sim_cycle < event.cycle) {
+        return false;  // Not time yet - wait
+    }
+
+    // Time to inject (at or past the scheduled cycle)
+    // Check if we have credit for the destination memory tile
+    if (!hasCredit(event.dst)) {
+        return false;  // No credit available - wait
+    }
+    
+    // Create the REQUEST packet
+    double now = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
+    int vc = randInt(0, GlobalParams::n_virtual_channels - 1);
+    
+    // REQUEST packets are 2 flits (2 flits × 128 bits/flit = 256 bits = 32 bytes)
+    const int REQUEST_SIZE_FLITS = 2;
+    packet.make(local_id, event.dst, vc, now, REQUEST_SIZE_FLITS);
+    packet.feature_id = event.feature_id;
+    packet.packet_type = PACKET_TYPE_REQUEST;
+    
+    // Consume one credit for this memory tile
+    consumeCredit(event.dst);
+
+    // Advance to next event (will be done after successful transmission)
+    // Note: We don't increment here - let txProcess do it after pushing to queue
+    
+    return true;
+}
+
+// Handle incoming REQUEST packet at memory tile
+void ProcessingElement::handleIncomingRequest(const Flit& flit)
+{
+    if (!memory_controller) {
+        cerr << "ERROR: handleIncomingRequest called but no memory controller!" << endl;
+        return;
+    }
+
+    // Get current cycle when HEAD flit arrives
+    uint64_t arrival_cycle = static_cast<uint64_t>(
+        sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
+
+    // Process the request through DRAM model
+    bool accepted = memory_controller->processRequest(flit.src_id, flit.feature_id, arrival_cycle);
+    
+    // CRITICAL: Even if dropped, we must eventually return credit to prevent deadlock!
+    // The memory controller will track this and still generate a response
+    // (even if it's delayed or represents a retry)
+    if (!accepted && GlobalParams::verbose_mode > VERBOSE_LOW) {
+        cout << "WARNING: MemTile[" << local_id << "] REQUEST from PE " 
+             << flit.src_id << " @ cycle " << arrival_cycle 
+             << " - memory controller queue pressure" << endl;
+    }
+}
+
+// Generate RESPONSE packets for memory tiles
+bool ProcessingElement::canShotResponse(Packet & packet)
+{
+    if (!memory_controller) {
+        return false;  // Should not happen
+    }
+
+    // Get current cycle
+    uint64_t current_cycle = static_cast<uint64_t>(
+        sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
+
+    // Check if there's a response ready to send
+    if (!memory_controller->hasReadyResponse(current_cycle)) {
+        return false;
+    }
+
+    // Get the response details
+    MemoryRequest resp = memory_controller->getNextResponse();
+
+    // Create RESPONSE packet (8 flits = 128 bytes)
+    const int RESPONSE_SIZE_FLITS = 8;
+    double now = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
+    int vc = randInt(0, GlobalParams::n_virtual_channels - 1);
+    
+    packet.make(local_id, resp.original_src_id, vc, now, RESPONSE_SIZE_FLITS);
+    packet.feature_id = resp.feature_id;
+    packet.packet_type = PACKET_TYPE_RESPONSE;
+
+    if (GlobalParams::verbose_mode > VERBOSE_OFF) {
+        cout << "MemTile[" << local_id << "] @ cycle " << current_cycle
+             << ": Injecting RESPONSE to PE " << resp.original_src_id 
+             << " (fid=" << resp.feature_id << ", scheduled @ " << resp.start_cycle << ")" << endl;
+    }
+
+    return true;
+}
+
+// Print memory controller statistics
+void ProcessingElement::printMemoryStats() const
+{
+    if (!is_memory_tile || !memory_controller) {
+        return;  // Not a memory tile
+    }
+    
+    cout << "MemTile[" << local_id << "] Statistics:" << endl;
+    cout << "  Requests received: " << memory_controller->getTotalRequestsReceived() << endl;
+    cout << "  Responses sent:    " << memory_controller->getTotalResponsesSent() << endl;
+    cout << "  Requests dropped:  " << memory_controller->getTotalRequestsDropped() << endl;
+    cout << "  Queue size:        " << memory_controller->getPendingCount() << endl;
+}
+
+// Initialize credits for all memory tiles
+void ProcessingElement::initMemoryCredits()
+{
+    // Credits control max outstanding requests per memory tile
+    const int CREDITS_PER_MEMORY_TILE = 64;
+    
+    // Get all memory tile IDs
+    static const int MEMORY_TILE_IDS[] = {1, 2, 4, 7, 8, 11, 13, 14};
+    static const int NUM_MEMORY_TILES = 8;
+    
+    for (int i = 0; i < NUM_MEMORY_TILES; i++) {
+        memory_credits[MEMORY_TILE_IDS[i]] = CREDITS_PER_MEMORY_TILE;
+    }
+}
+
+// Check if credits are available for a memory tile
+bool ProcessingElement::hasCredit(int mem_tile_id)
+{
+    if (memory_credits.find(mem_tile_id) == memory_credits.end()) {
+        return false;  // Not a memory tile
+    }
+    return memory_credits[mem_tile_id] > 0;
+}
+
+// Consume one credit when sending a REQUEST
+void ProcessingElement::consumeCredit(int mem_tile_id)
+{
+    if (memory_credits.find(mem_tile_id) != memory_credits.end()) {
+        memory_credits[mem_tile_id]--;
+    }
+}
+
+// Return one credit when receiving a RESPONSE
+void ProcessingElement::returnCredit(int src_mem_tile)
+{
+    if (memory_credits.find(src_mem_tile) != memory_credits.end()) {
+        memory_credits[src_mem_tile]++;
+    }
 }
 

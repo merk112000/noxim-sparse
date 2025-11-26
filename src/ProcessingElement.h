@@ -12,14 +12,25 @@
 #define __NOXIMPROCESSINGELEMENT_H__
 
 #include <queue>
+#include <vector>
+#include <map>
 #include <systemc.h>
 
 #include "DataStructs.h"
 #include "GlobalTrafficTable.h"
 #include "GlobalTrafficHardcoding.h"
 #include "Utils.h"
+#include "MemoryController.h"
 
 using namespace std;
+
+// TraceEvent -- Structure for trace-driven traffic
+struct TraceEvent {
+    uint64_t cycle;
+    int src;
+    int dst;
+    int feature_id;
+};
 
 SC_MODULE(ProcessingElement)
 {
@@ -68,6 +79,27 @@ SC_MODULE(ProcessingElement)
     bool never_transmit;	// true if the PE does not transmit any packet 
     //  (valid only for the table based traffic)
 
+    // Trace-based traffic support
+    vector<TraceEvent> trace_events;	// Loaded trace events for this PE
+    size_t next_event_idx;		// Index of next event to inject
+    void loadTraceFile();		// Load trace file for this PE
+    bool canShotTrace(Packet & packet);	// Trace-driven packet generation
+    bool isMemoryTile(int id);		// Check if a tile ID is a memory controller
+    int getTracePeId(int noxim_id);	// Map Noxim tile ID to trace PE ID
+
+    // Memory controller support
+    MemoryController* memory_controller;  // DRAM controller for memory tiles
+    bool is_memory_tile;		  // True if this PE is a memory tile
+    void handleIncomingRequest(const Flit& flit);  // Process REQUEST from PE
+    bool canShotResponse(Packet & packet);	   // Generate RESPONSE packets
+
+    // Credit-based flow control (PE -> Memory tile)
+    map<int, int> memory_credits;	  // credits[mem_tile_id] = available credits
+    void initMemoryCredits();		  // Initialize credits for all memory tiles
+    bool hasCredit(int mem_tile_id);	  // Check if credits available
+    void consumeCredit(int mem_tile_id);  // Consume 1 credit when sending REQUEST
+    void returnCredit(int src_mem_tile);  // Return 1 credit when receiving RESPONSE
+
     void fixRanges(const Coord, Coord &);	// Fix the ranges of the destination
     int randInt(int min, int max);	// Extracts a random integer number between min and max
     int getRandomSize();	// Returns a random size in flits for the packet
@@ -78,6 +110,9 @@ SC_MODULE(ProcessingElement)
     int roulett();
     int findRandomDestination(int local_id,int hops);
     unsigned int getQueueSize() const;
+    
+    // Memory controller statistics
+    void printMemoryStats() const;	// Print memory controller stats (if memory tile)
 
     // Constructor
     SC_CTOR(ProcessingElement) {
@@ -88,6 +123,12 @@ SC_MODULE(ProcessingElement)
 	SC_METHOD(txProcess);
 	sensitive << reset;
 	sensitive << clock.pos();
+
+	next_event_idx = 0;
+	memory_controller = nullptr;
+	is_memory_tile = false;
+	// Note: Do NOT call loadTraceFile() here - local_id is not set yet!
+	// Memory controller will be initialized in txProcess when local_id is known
     }
 
 };

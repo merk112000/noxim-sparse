@@ -119,6 +119,14 @@ int sc_main(int arg_num, char *arg_vet[])
     // Show statistics
     GlobalStats gs(n);
     gs.showStats(std::cout, GlobalParams::detailed);
+    
+    // Show memory tile statistics
+    cout << endl << "Memory Tile Statistics:" << endl;
+    for (int y = 0; y < GlobalParams::mesh_dim_y; y++) {
+        for (int x = 0; x < GlobalParams::mesh_dim_x; x++) {
+            n->t[x][y]->pe->printMemoryStats();
+        }
+    }
 
 
     if ((GlobalParams::max_volume_to_be_drained > 0) &&
