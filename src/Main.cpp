@@ -105,10 +105,34 @@ int sc_main(int arg_num, char *arg_vet[])
     reset.write(0);
     cout << " done! " << endl;
     cout << " Now running for " << GlobalParams:: simulation_time << " cycles..." << endl;
-    // fix clock periods different from 1ns
-    //sc_start(GlobalParams::simulation_time, SC_NS);
-    sc_start(GlobalParams::simulation_time * GlobalParams::clock_period_ps, SC_PS);
-
+    
+    // Run simulation with heartbeat every 100k cycles
+    uint64_t heartbeat_interval = 50000;
+    uint64_t total_cycles = GlobalParams::simulation_time;
+    uint64_t cycles_run = 0;
+    
+    while (cycles_run < total_cycles) {
+        uint64_t cycles_to_run = min(heartbeat_interval, total_cycles - cycles_run);
+        sc_start((double)(cycles_to_run * GlobalParams::clock_period_ps), SC_PS);
+        cycles_run += cycles_to_run;
+        
+        // Print heartbeat statistics
+        if (cycles_run % heartbeat_interval == 0) {
+            cout << "\n========== Heartbeat @ " << cycles_run << " cycles ==========" << endl;
+            
+            // Show PE statistics
+            for (int y = 0; y < GlobalParams::mesh_dim_y; y++) {
+                for (int x = 0; x < GlobalParams::mesh_dim_x; x++) {
+                    Coord coord;
+                    coord.x = x;
+                    coord.y = y;
+                    int id = coord2Id(coord);
+                    n->t[x][y]->pe->printHeartbeat(id, cycles_run);
+                }
+            }
+            cout << "========================================\n" << endl;
+        }
+    }
 
     // Close the simulation
     if (GlobalParams::trace_mode) sc_close_vcd_trace_file(tf);
@@ -125,6 +149,35 @@ int sc_main(int arg_num, char *arg_vet[])
     for (int y = 0; y < GlobalParams::mesh_dim_y; y++) {
         for (int x = 0; x < GlobalParams::mesh_dim_x; x++) {
             n->t[x][y]->pe->printMemoryStats();
+        }
+    }
+
+    // Show end-to-end latency statistics for compute PEs
+    cout << endl << "End-to-End Latency Statistics (REQUEST to RESPONSE):" << endl;
+    for (int y = 0; y < GlobalParams::mesh_dim_y; y++) {
+        for (int x = 0; x < GlobalParams::mesh_dim_x; x++) {
+            n->t[x][y]->pe->printE2ELatencyStats();
+        }
+    }
+    
+    // Show stall breakdown statistics for compute PEs
+    cout << endl << "Stall Breakdown Statistics (Memory vs NoC):" << endl;
+    for (int y = 0; y < GlobalParams::mesh_dim_y; y++) {
+        for (int x = 0; x < GlobalParams::mesh_dim_x; x++) {
+            n->t[x][y]->pe->printStallStats();
+        }
+    }
+    
+    // Show router link utilization (focus on interior routers and hotspots)
+    cout << endl << "Router Link Utilization (Interior and Critical Routers):" << endl;
+    // Print routers in the center (high traffic convergence points)
+    vector<pair<int,int>> critical_routers = {{1,1}, {1,2}, {1,3}, {2,1}, {2,2}, {2,3}, {3,1}, {3,2}, {3,3}};
+    for (auto coord : critical_routers) {
+        int x = coord.first;
+        int y = coord.second;
+        if (x < GlobalParams::mesh_dim_x && y < GlobalParams::mesh_dim_y) {
+            n->t[x][y]->r->printLinkUtilization();
+            cout << endl;
         }
     }
 

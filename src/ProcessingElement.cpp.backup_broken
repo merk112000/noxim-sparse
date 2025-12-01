@@ -98,12 +98,12 @@ void ProcessingElement::rxProcess()
 	            request_injection_time.erase(feature_id);
 	        }
 	    }
+	    
+	    // CRITICAL: ACK must be inside the if block for proper ABP handshake!
+	    ack_rx.write(current_level_rx);
 	}
-	ack_rx.write(current_level_rx);
     }
-}
-
-void ProcessingElement::txProcess()
+}void ProcessingElement::txProcess()
 {
     if (reset.read()) {
 	req_tx.write(0);
@@ -192,7 +192,7 @@ void ProcessingElement::txProcess()
 		}
 		
 		if (can_inject) {
-		    Flit flit = nextFlit();	// Generate a new flit (may pop packet if last flit)
+		    Flit flit = nextFlit();	// Generate a new flit
 		    flit_tx->write(flit);	// Send the generated flit
 		    current_level_tx = 1 - current_level_tx;	// Negate the old value for Alternating Bit Protocol (ABP)
 		    req_tx.write(current_level_tx);
@@ -205,20 +205,14 @@ void ProcessingElement::txProcess()
 			    sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
 			memory_controller->notifyFlitInjected(current_cycle);
 		    }
-		} else {
-		    // DRAM bandwidth limiting - can't inject this cycle
-		    if (is_memory_tile) {
-			stall_cycles_dram_bandwidth++;  // STALL REASON: DRAM bandwidth limiting
-		    }
 		}
 		// If can_inject=false, flit stays in queue, will try again next cycle (DRAM bandwidth stall)
 	    }
 	} else {
 	    // ACK not ready - waiting for router to accept previous flit
-	    // This is ABP backpressure - router hasn't ACKed the previous flit yet
-	    // NOTE: With 75% buffer threshold, should get better than 50% utilization
-	    if (!packet_queue.empty()) {
-		stall_cycles_noc_contention++;  // STALL REASON: ABP/NoC contention
+	    // This is NoC contention (router buffer full or output port busy)
+	    if (!is_memory_tile && !packet_queue.empty()) {
+		stall_cycles_noc_contention++;  // STALL REASON: NoC contention (router backpressure)
 	    }
 	}
     }

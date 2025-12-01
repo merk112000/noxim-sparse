@@ -57,6 +57,26 @@ SC_MODULE(ProcessingElement)
     bool current_level_tx;	// Current level for Alternating Bit Protocol (ABP)
     queue < Packet > packet_queue;	// Local queue of packets
     bool transmittedAtPreviousCycle;	// Used for distributions with memory
+    
+    // Heartbeat tracking
+    uint64_t last_heartbeat_cycle;
+    uint64_t total_requests_injected;
+    uint64_t total_responses_injected;
+
+    // End-to-end latency tracking (REQUEST injection to RESPONSE arrival)
+    map<int, uint64_t> request_injection_time;  // feature_id -> injection cycle (packet creation)
+    map<int, uint64_t> request_network_entry_time;  // feature_id -> when HEAD flit enters network
+    uint64_t total_e2e_latency;                  // sum of all latencies
+    uint64_t max_e2e_latency;                    // maximum latency observed
+    uint64_t e2e_latency_samples;                // number of completed REQUEST-RESPONSE pairs
+    uint64_t total_pe_queue_delay;               // sum of time spent in source PE queue
+    uint64_t max_pe_queue_delay;                 // maximum PE queue delay observed
+    
+    // Stall reason tracking (compute PEs only)
+    uint64_t stall_cycles_no_credits;            // Cycles stalled due to no memory credits (memory backpressure)
+    uint64_t stall_cycles_noc_contention;        // Cycles stalled due to NoC contention (buffer full)
+    uint64_t stall_cycles_dram_bandwidth;        // Cycles stalled due to DRAM bandwidth limit (memory tiles)
+    uint64_t total_injection_attempts;           // Total cycles attempted to inject
 
     // Functions
     void rxProcess();		// The receiving process
@@ -82,6 +102,7 @@ SC_MODULE(ProcessingElement)
     // Trace-based traffic support
     vector<TraceEvent> trace_events;	// Loaded trace events for this PE
     size_t next_event_idx;		// Index of next event to inject
+    uint64_t last_injection_cycle;	// Last cycle when we injected a request (for spacing)
     void loadTraceFile();		// Load trace file for this PE
     bool canShotTrace(Packet & packet);	// Trace-driven packet generation
     bool isMemoryTile(int id);		// Check if a tile ID is a memory controller
@@ -94,8 +115,8 @@ SC_MODULE(ProcessingElement)
     bool canShotResponse(Packet & packet);	   // Generate RESPONSE packets
 
     // Credit-based flow control (PE -> Memory tile)
-    map<int, int> memory_credits;	  // credits[mem_tile_id] = available credits
-    void initMemoryCredits();		  // Initialize credits for all memory tiles
+    int total_memory_credits;		  // Total credits available (64 per PE, any destination)
+    void initMemoryCredits();		  // Initialize credits
     bool hasCredit(int mem_tile_id);	  // Check if credits available
     void consumeCredit(int mem_tile_id);  // Consume 1 credit when sending REQUEST
     void returnCredit(int src_mem_tile);  // Return 1 credit when receiving RESPONSE
@@ -113,6 +134,9 @@ SC_MODULE(ProcessingElement)
     
     // Memory controller statistics
     void printMemoryStats() const;	// Print memory controller stats (if memory tile)
+    void printHeartbeat(int id, uint64_t cycle);  // Print heartbeat stats
+    void printE2ELatencyStats() const;	// Print end-to-end latency stats (compute PEs only)
+    void printStallStats() const;	// Print stall breakdown stats (compute PEs only)
 
     // Constructor
     SC_CTOR(ProcessingElement) {
@@ -125,6 +149,19 @@ SC_MODULE(ProcessingElement)
 	sensitive << clock.pos();
 
 	next_event_idx = 0;
+	last_injection_cycle = 0;
+	last_heartbeat_cycle = 0;
+	total_requests_injected = 0;
+	total_responses_injected = 0;
+	total_e2e_latency = 0;
+	max_e2e_latency = 0;
+	e2e_latency_samples = 0;
+	total_pe_queue_delay = 0;
+	max_pe_queue_delay = 0;
+	stall_cycles_no_credits = 0;
+	stall_cycles_noc_contention = 0;
+	stall_cycles_dram_bandwidth = 0;
+	total_injection_attempts = 0;
 	memory_controller = nullptr;
 	is_memory_tile = false;
 	// Note: Do NOT call loadTraceFile() here - local_id is not set yet!

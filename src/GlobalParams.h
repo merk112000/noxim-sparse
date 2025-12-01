@@ -57,6 +57,7 @@ using namespace std;
 // Routing algorithms
 #define ROUTING_DYAD           "DYAD"
 #define ROUTING_TABLE_BASED    "TABLE_BASED"
+#define ROUTING_XY_PATH_REVERSE "XY_PATH_REVERSE"
 
 
 // Channel selection 

@@ -71,7 +71,14 @@ SC_MODULE(Router)
     ReservationTable reservation_table;		// Switch reservation table
     unsigned long routed_flits;
     RoutingAlgorithm * routingAlgorithm; 
-    SelectionStrategy * selectionStrategy; 
+    SelectionStrategy * selectionStrategy;
+    
+    // Link utilization tracking
+    uint64_t port_rx_busy[DIRECTIONS + 2];      // Cycles each input port received a flit
+    uint64_t port_tx_busy[DIRECTIONS + 2];      // Cycles each output port transmitted a flit
+    uint64_t total_observation_cycles;           // Total cycles observed (for utilization calc)
+    uint64_t buffer_occupancy_sum[DIRECTIONS + 2]; // Sum of buffer occupancy over time
+    uint64_t buffer_samples;                     // Number of samples taken 
     
     // Functions
 
@@ -141,6 +148,9 @@ SC_MODULE(Router)
     void ShowBuffersStats(std::ostream & out);
 
     bool connectedHubs(int src_hub, int dst_hub);
+    
+    // Link utilization statistics
+    void printLinkUtilization() const;
 };
 
 #endif

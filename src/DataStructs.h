@@ -12,7 +12,10 @@
 #define _DATASTRUCS_H__
 
 #include <systemc.h>
+#include <vector>
 #include "GlobalParams.h"
+
+using namespace std;
 
 // Coord -- XY coordinates type of the Tile inside the Mesh
 class Coord {
@@ -26,7 +29,7 @@ class Coord {
 
 // FlitType -- Flit type enumeration
 enum FlitType {
-    FLIT_TYPE_HEAD, FLIT_TYPE_BODY, FLIT_TYPE_TAIL
+    FLIT_TYPE_HEAD, FLIT_TYPE_BODY, FLIT_TYPE_TAIL, FLIT_TYPE_HEAD_TAIL
 };
 
 // PacketType -- Packet type for SpMM accelerator
@@ -54,6 +57,7 @@ struct Packet {
     bool use_low_voltage_path;
     int feature_id;		// Feature ID for trace-based traffic
     PacketType packet_type;	// REQUEST or RESPONSE
+    vector<int> recorded_path;  // Path recording for reverse routing (XY_PATH_REVERSE mode)
 
     // Constructors
     Packet() { 
@@ -78,6 +82,9 @@ struct Packet {
     }
 };
 
+// Forward declaration for Flit
+struct Flit;
+
 // RouteData -- data required to perform routing
 struct RouteData {
     int current_id;
@@ -85,6 +92,11 @@ struct RouteData {
     int dst_id;
     int dir_in;			// direction from which the packet comes from
     int vc_id;
+    PacketType packet_type; // Packet type for routing decisions
+    vector<int> recorded_path;  // Recorded path for reverse routing
+    
+    RouteData() : current_id(-1), src_id(-1), dst_id(-1), dir_in(-1), vc_id(-1), 
+                  packet_type(PACKET_TYPE_REQUEST) {}
 };
 
 struct ChannelStatus {
@@ -144,6 +156,9 @@ struct Flit {
     PacketType packet_type;	// REQUEST or RESPONSE
 
     int hub_relay_node;
+    
+    // Path recording for reverse routing (XY_PATH_REVERSE mode)
+    vector<int> recorded_path;  // Sequence of router IDs traversed by the request
 
     inline bool operator ==(const Flit & flit) const {
 	return (flit.src_id == src_id && flit.dst_id == dst_id
