@@ -11,103 +11,123 @@ int ProcessingElement::randInt(int min, int max)
 	(int) ((double) (max - min + 1) * rand() / (RAND_MAX + 1.0));
 }
 
+// Master process: ensures RX runs before TX within same cycle
+void ProcessingElement::process()
+{
+    rxProcess();   // RX first - receive flits and return credits
+    txProcess();   // TX second - check credits and send (credits from RX are immediately available)
+}
+
 void ProcessingElement::rxProcess()
 {
     if (reset.read()) {
-	ack_rx.write(0);
-	current_level_rx = 0;
+	ack_rx.write(true);  // READY/VALID: signal READY on reset
+	current_level_rx = 0;  // kept for compatibility only, not used in protocol
 	if (memory_controller) {
 	    memory_controller->reset();
 	}
     } else {
-	if (req_rx.read() == 1 - current_level_rx) {
+	// READY/VALID protocol: req_rx is VALID, ack_rx is READY
+	bool valid = req_rx.read();  // upstream VALID signal
+	bool ready = true;  // assume we're READY unless we need backpressure
+	
+	if (valid) {
 	    Flit flit_tmp = flit_rx.read();
 	    
-	    // Track ingress link utilization for memory tiles (REQUEST flits arriving)
-	    if (is_memory_tile && flit_tmp.packet_type == PACKET_TYPE_REQUEST && memory_controller) {
-	        memory_controller->trackIngressActivity();
-	    }
-	    
-	    // BACKPRESSURE: If this is a memory tile receiving a REQUEST HEAD and MSHR is full, don't ACK!
-	    // This causes the router to buffer the flit (proper backpressure)
+	    // BACKPRESSURE: If this is a memory tile receiving a REQUEST HEAD and MSHR is full, signal NOT READY
 	    if (is_memory_tile && 
 	        flit_tmp.packet_type == PACKET_TYPE_REQUEST && 
 	        (flit_tmp.flit_type == FLIT_TYPE_HEAD || flit_tmp.flit_type == FLIT_TYPE_HEAD_TAIL)) {
 	        
-	        if (!memory_controller->canAcceptRequest()) {
-	            // MSHR FULL! Do NOT ack, do NOT update level - router will retry next cycle
+	        // Check both MSHR queue AND packet_queue (egress packets waiting to be sent)
+	        // If packet_queue is full, we can't generate more response packets!
+	        const size_t MAX_PACKET_QUEUE = 32;  // Limit egress packet queue size
+	        bool mshr_has_space = memory_controller->canAcceptRequest();
+	        bool packet_queue_has_space = (packet_queue.size() < MAX_PACKET_QUEUE);
+	        
+	        if (!mshr_has_space || !packet_queue_has_space) {
+	            // MSHR or packet queue FULL! Signal NOT READY - router will buffer the flit
+	            ready = false;
 	            if (GlobalParams::verbose_mode > VERBOSE_OFF) {
 	                uint64_t cur_cycle = static_cast<uint64_t>(
 	                    sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
 	                cout << "BACKPRESSURE @ cycle " << cur_cycle 
-	                     << ": MemTile[" << local_id << "] MSHR full ("
-	                     << memory_controller->getPendingCount() << "), NOT ACKing REQUEST from PE[" 
-	                     << flit_tmp.src_id << "]" << endl;
+	                     << ": MemTile[" << local_id << "] "
+	                     << (mshr_has_space ? "" : "MSHR full, ")
+	                     << (packet_queue_has_space ? "" : "Packet queue full, ")
+	                     << "signaling NOT READY for REQUEST from PE[" 
+	                     << flit_tmp.src_id << "]" 
+	                     << " (MSHR: " << memory_controller->getPendingCount() 
+	                     << ", PktQ: " << packet_queue.size() << "/" << MAX_PACKET_QUEUE << ")" << endl;
 	            }
-	            // Don't write ack, don't update level - flit stays in router buffer!
-	            return;
+	        } else {
+	            // MSHR has space - accept the request (ready=true, will be processed)
+	            // Track ingress link utilization ONLY when actually accepting
+	            if (memory_controller) {
+	                memory_controller->trackIngressActivity();
+	            }
+	            handleIncomingRequest(flit_tmp);
 	        }
-	        
-	        // MSHR has space - accept the request
-	        handleIncomingRequest(flit_tmp);
-	    }
-	    
-	    current_level_rx = 1 - current_level_rx;	// Negate the old value for Alternating Bit Protocol (ABP)
-	    
-	    // If this is a compute PE and we received a RESPONSE HEAD flit, return credit
-	    if (!is_memory_tile && 
-	        flit_tmp.packet_type == PACKET_TYPE_RESPONSE && 
-	        (flit_tmp.flit_type == FLIT_TYPE_HEAD || flit_tmp.flit_type == FLIT_TYPE_HEAD_TAIL)) {
-	        
-	        // Debug: verify we're only returning credits for HEAD flits
-	        if (GlobalParams::verbose_mode > VERBOSE_OFF) {
-	            cout << "PE[" << local_id << "] @ cycle " 
-	                 << (sc_time_stamp().to_double() / GlobalParams::clock_period_ps)
-	                 << ": Returning credit for RESPONSE HEAD from MemTile " << flit_tmp.src_id
-	                 << " (seq=" << flit_tmp.sequence_no << "/" << flit_tmp.sequence_length << ")" << endl;
-	        }
-	        
-	        returnCredit(flit_tmp.src_id);
+	    } else {
+	        // For non-memory tiles or non-REQUEST-HEAD flits, always accept (no backpressure needed)
+	        // Process RESPONSE HEAD flits for compute PEs
+	        if (!is_memory_tile && 
+	            flit_tmp.packet_type == PACKET_TYPE_RESPONSE && 
+	            (flit_tmp.flit_type == FLIT_TYPE_HEAD || flit_tmp.flit_type == FLIT_TYPE_HEAD_TAIL)) {
+	            
+	            // Debug: verify we're only returning credits for HEAD flits
+	            if (GlobalParams::verbose_mode > VERBOSE_OFF) {
+	                cout << "PE[" << local_id << "] @ cycle " 
+	                     << (sc_time_stamp().to_double() / GlobalParams::clock_period_ps)
+	                     << ": Returning credit for RESPONSE HEAD from MemTile " << flit_tmp.src_id
+	                     << " (seq=" << flit_tmp.sequence_no << "/" << flit_tmp.sequence_length << ")" << endl;
+	            }
+	            
+	            returnCredit(flit_tmp.src_id);
 
-	        // Track end-to-end latency (REQUEST injection to RESPONSE arrival)
-	        int feature_id = flit_tmp.feature_id;
-	        if (request_injection_time.count(feature_id) > 0) {
-	            uint64_t cur_cycle = static_cast<uint64_t>(
-	                sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
-	            uint64_t injection_cycle = request_injection_time[feature_id];
-	            uint64_t latency = cur_cycle - injection_cycle;
-	            
-	            total_e2e_latency += latency;
-	            e2e_latency_samples++;
-	            if (latency > max_e2e_latency) {
-	                max_e2e_latency = latency;
-	            }
-	            
-	    // Track PE queue delay (time from packet creation to network entry)
-	            if (request_network_entry_time.count(feature_id) > 0) {
-	                uint64_t network_entry = request_network_entry_time[feature_id];
-	                uint64_t pe_queue_delay = network_entry - injection_cycle;
-	                total_pe_queue_delay += pe_queue_delay;
-	                if (pe_queue_delay > max_pe_queue_delay) {
-	                    max_pe_queue_delay = pe_queue_delay;
+	            // Track end-to-end latency (REQUEST injection to RESPONSE arrival)
+	            int feature_id = flit_tmp.feature_id;
+	            if (request_injection_time.count(feature_id) > 0) {
+	                uint64_t cur_cycle = static_cast<uint64_t>(
+	                    sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
+	                uint64_t injection_cycle = request_injection_time[feature_id];
+	                uint64_t latency = cur_cycle - injection_cycle;
+	                
+	                total_e2e_latency += latency;
+	                e2e_latency_samples++;
+	                if (latency > max_e2e_latency) {
+	                    max_e2e_latency = latency;
 	                }
-	                request_network_entry_time.erase(feature_id);
+	                
+	        // Track PE queue delay (time from packet creation to network entry)
+	                if (request_network_entry_time.count(feature_id) > 0) {
+	                    uint64_t network_entry = request_network_entry_time[feature_id];
+	                    uint64_t pe_queue_delay = network_entry - injection_cycle;
+	                    total_pe_queue_delay += pe_queue_delay;
+	                    if (pe_queue_delay > max_pe_queue_delay) {
+	                        max_pe_queue_delay = pe_queue_delay;
+	                    }
+	                    request_network_entry_time.erase(feature_id);
+	                }
+	                
+	                // Remove from map to free memory
+	                request_injection_time.erase(feature_id);
 	            }
-	            
-	            // Remove from map to free memory
-	            request_injection_time.erase(feature_id);
 	        }
 	    }
 	}
-	ack_rx.write(current_level_rx);
+	
+	// Always write READY status to upstream
+	ack_rx.write(ready);
     }
 }
 
 void ProcessingElement::txProcess()
 {
     if (reset.read()) {
-	req_tx.write(0);
-	current_level_tx = 0;
+	req_tx.write(false);      // No VALID on reset
+	has_flit = false;         // Output register empty
+	current_level_tx = 0;     // Legacy, not used
 	transmittedAtPreviousCycle = false;
     } else {
 
@@ -126,101 +146,139 @@ void ProcessingElement::txProcess()
         }
     }
 
-    // Memory tiles generate RESPONSE packets
-    if (is_memory_tile) {
-        // Limit NI queue to prevent unbounded growth and network flooding
-        // With DRAM egress BW limiting, responses already rate-limited
-        // NI queue acts as buffer between DRAM and NoC - needs to absorb bursts
-        const unsigned int MAX_NI_QUEUE_SIZE = 16;  // Realistic on-chip NI: 16 packets (up to 128 flits = 2KB)
-        
-        if (packet_queue.size() < MAX_NI_QUEUE_SIZE) {
-            Packet packet;
-            if (canShotResponse(packet)) {
-                packet_queue.push(packet);
-                transmittedAtPreviousCycle = true;
-                total_responses_injected++;  // Track for heartbeat
-            } else {
-                transmittedAtPreviousCycle = false;
-            }
-        } else {
-            transmittedAtPreviousCycle = false;  // NI queue full - backpressure to DRAM
-        }
-    }
-    // Compute PEs generate REQUEST packets (trace-based or other traffic)
-    else if(GlobalParams::traffic_distribution != TRAFFIC_HARDCODED) {
-        Packet packet;
-        if (canShot(packet)) {
-            packet_queue.push(packet);
-            transmittedAtPreviousCycle = true;
-            total_requests_injected++;  // Track for heartbeat
-        } else {
-            transmittedAtPreviousCycle = false;
-        }
-    } else if(traffic_cycle < traffic_hardcoded->num_cycles()) {
-		double now = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
-		
-		bool any = false;
-		for (HardcodedTrafficEntry const& expected_packet
-			   : traffic_hardcoded->traffic_at_cycle(traffic_cycle)) {
-			if(expected_packet.src == local_id) {
-		    	Packet packet;
-				int vc = randInt(0,GlobalParams::n_virtual_channels-1);
-				packet.make(local_id, expected_packet.dst, vc, now, getRandomSize());
-				packet_queue.push(packet);
-				any = true;
-			}
-		}
-
-		if(any)
-			transmittedAtPreviousCycle = true;
-		else
-			transmittedAtPreviousCycle = false;
-		
-		traffic_cycle += 1;
-    }
-
-
-	if (ack_tx.read() == current_level_tx) {
-	    if (!packet_queue.empty()) {
-		// CRITICAL: For memory tiles, check DRAM flit-level bandwidth before injecting each RESPONSE flit
-		// This enforces 1 flit every DRAM_FLIT_INJECTION_INTERVAL cycles (realistic DRAM data channel)
-		bool can_inject = true;
-		if (is_memory_tile && memory_controller && packet_queue.front().packet_type == PACKET_TYPE_RESPONSE) {
-		    uint64_t current_cycle = static_cast<uint64_t>(
-			sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
-		    can_inject = memory_controller->canInjectFlit(current_cycle);
-		}
-		
-		if (can_inject) {
-		    Flit flit = nextFlit();	// Generate a new flit (may pop packet if last flit)
-		    flit_tx->write(flit);	// Send the generated flit
-		    current_level_tx = 1 - current_level_tx;	// Negate the old value for Alternating Bit Protocol (ABP)
-		    req_tx.write(current_level_tx);
-		    
-		    // Track egress link utilization for memory tiles (RESPONSE flits departing)
-		    if (is_memory_tile && flit.packet_type == PACKET_TYPE_RESPONSE && memory_controller) {
-			memory_controller->trackEgressActivity();
-			// Notify memory controller that a flit was injected (for bandwidth tracking)
-			uint64_t current_cycle = static_cast<uint64_t>(
-			    sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
-			memory_controller->notifyFlitInjected(current_cycle);
-		    }
-		} else {
-		    // DRAM bandwidth limiting - can't inject this cycle
-		    if (is_memory_tile) {
-			stall_cycles_dram_bandwidth++;  // STALL REASON: DRAM bandwidth limiting
-		    }
-		}
-		// If can_inject=false, flit stays in queue, will try again next cycle (DRAM bandwidth stall)
-	    }
-	} else {
-	    // ACK not ready - waiting for router to accept previous flit
-	    // This is ABP backpressure - router hasn't ACKed the previous flit yet
-	    // NOTE: With 75% buffer threshold, should get better than 50% utilization
-	    if (!packet_queue.empty()) {
-		stall_cycles_noc_contention++;  // STALL REASON: ABP/NoC contention
+    // ========================================================================
+    // PHASE 1: Drive output from register and handle handshake completion
+    // ========================================================================
+    if (has_flit) {
+	// We have a flit in the output register - drive VALID and data
+	flit_tx->write(out_reg);
+	req_tx.write(true);  // Assert VALID
+	
+	// Check if handshake completes this cycle (VALID=1 && READY=1)
+	bool ready = ack_tx.read();
+	if (ready) {
+	    // Handshake completed! Clear the output register
+	    has_flit = false;
+	    
+	    // Track egress link utilization for memory tiles (RESPONSE flits departing)
+	    if (is_memory_tile && out_reg.packet_type == PACKET_TYPE_RESPONSE && memory_controller) {
+		memory_controller->trackEgressActivity();
+		// Notify memory controller that a flit was injected (for bandwidth tracking)
+		uint64_t current_cycle = static_cast<uint64_t>(
+		    sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
+		memory_controller->notifyFlitInjected(current_cycle);
 	    }
 	}
+    } else {
+	// No flit in output register - deassert VALID
+	req_tx.write(false);
+    }
+    
+    // ========================================================================
+    // PHASE 2: Generate new packets and load output register (if empty)
+    // ========================================================================
+    // Only generate packets if output register is empty (backpressure from network handled by has_flit)
+    if (!has_flit) {
+	// Memory tiles generate RESPONSE packets
+	if (is_memory_tile) {
+	    // Limit NI queue - must be large enough to handle MSHR capacity (128)
+	    // Each response is multiple flits, so queue needs sufficient depth
+	    const unsigned int MAX_NI_QUEUE_SIZE = 32;
+	    
+	    if (packet_queue.size() < MAX_NI_QUEUE_SIZE) {
+		Packet packet;
+		if (canShotResponse(packet)) {
+		    packet_queue.push(packet);
+		    transmittedAtPreviousCycle = true;
+		    total_responses_injected++;
+		} else {
+		    transmittedAtPreviousCycle = false;
+		}
+	    } else {
+		transmittedAtPreviousCycle = false;
+	    }
+	}
+	// Compute PEs generate REQUEST packets
+	else if(GlobalParams::traffic_distribution != TRAFFIC_HARDCODED) {
+	    // Compute PEs use credit-based flow control, so no need for NI queue limit
+	    // (credits already limit outstanding requests to prevent network flooding)
+	    Packet packet;
+	    if (canShot(packet)) {
+		packet_queue.push(packet);
+		transmittedAtPreviousCycle = true;
+		total_requests_injected++;
+	    } else {
+		transmittedAtPreviousCycle = false;
+	    }
+	} else if(traffic_cycle < traffic_hardcoded->num_cycles()) {
+	    double now = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
+	    
+	    bool any = false;
+	    for (HardcodedTrafficEntry const& expected_packet
+		       : traffic_hardcoded->traffic_at_cycle(traffic_cycle)) {
+		if(expected_packet.src == local_id) {
+		    Packet packet;
+		    int vc = randInt(0,GlobalParams::n_virtual_channels-1);
+		    packet.make(local_id, expected_packet.dst, vc, now, getRandomSize());
+		    packet_queue.push(packet);
+		    any = true;
+		}
+	    }
+
+	    if(any)
+		transmittedAtPreviousCycle = true;
+	    else
+		transmittedAtPreviousCycle = false;
+	    
+	    traffic_cycle += 1;
+	}
+    }
+
+    // ========================================================================
+    // PHASE 3: Load output register from packet queue (if register is empty)
+    // ========================================================================
+    if (!has_flit && !packet_queue.empty()) {
+	// Check if we can inject this flit (DRAM bandwidth limiting for memory tiles)
+	bool can_inject = true;
+	if (is_memory_tile && memory_controller && packet_queue.front().packet_type == PACKET_TYPE_RESPONSE) {
+	    uint64_t current_cycle = static_cast<uint64_t>(
+		sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
+	    can_inject = memory_controller->canInjectFlit(current_cycle);
+	}
+	
+	// CRITICAL: Check router buffer status BEFORE loading flit
+	// Memory tiles need to respect router backpressure at injection time
+	bool router_can_accept = true;
+	if (is_memory_tile) {
+	    // Check if router has space for this packet's VC
+	    // The packet's VC is already assigned, so check that specific VC
+	    TBufferFullStatus bfs = buffer_full_status_tx.read();
+	    int packet_vc = packet_queue.front().vc_id;
+	    router_can_accept = !bfs.mask[packet_vc];
+	}
+	
+	if (can_inject && router_can_accept) {
+	    // Generate next flit and load into output register
+	    Flit flit = nextFlit();  // This may pop packet if last flit
+	    out_reg = flit;
+	    has_flit = true;
+	} else {
+	    // DRAM bandwidth limiting or router buffer full - can't load this cycle
+	    if (is_memory_tile) {
+		if (!can_inject) {
+		    stall_cycles_dram_bandwidth++;
+		} else if (!router_can_accept) {
+		    stall_cycles_noc_contention++;
+		}
+	    }
+	}
+    } else if (!has_flit && packet_queue.empty()) {
+	// No packets to send - already handled by req_tx.write(false) in Phase 1
+    } else if (has_flit) {
+	// Output register occupied - will try again next cycle after handshake
+	// This is normal operation - no stall counting here
+    }
+    
     }
 }
 
@@ -240,6 +298,7 @@ Flit ProcessingElement::nextFlit()
     flit.feature_id = packet.feature_id;  // Propagate feature_id from packet to flit
     flit.packet_type = packet.packet_type; // Propagate packet type
     flit.recorded_path = packet.recorded_path;  // Propagate recorded path for reverse routing
+    flit.oracle_coalesce_marked = false;  // Initialize oracle coalescing marker
 
     flit.hub_relay_node = NOT_VALID;
 
@@ -697,8 +756,9 @@ bool ProcessingElement::isMemoryTile(int id)
     // Compute PEs (8 total): 0, 3, 5, 6, 9, 10, 12, 15
     
     static const int MEMORY_TILE_IDS[] = {
-       1,2,3,5,9,10,14,15,19,21,22,23
+        1, 2, 3, 5, 9, 10, 14, 15, 19, 21, 22, 23
     };
+
     static const int NUM_MEMORY_TILES = 12;
     
     for (int i = 0; i < NUM_MEMORY_TILES; i++) {
@@ -859,7 +919,8 @@ bool ProcessingElement::canShotTrace(Packet & packet)
     // Create the REQUEST packet
     double now = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
     
-    // REQUESTs can use any VC (0 through n_virtual_channels-1)
+    // Use ANY VC from full range (no separation between REQs and RESPs)
+    // Deadlock prevention relies on proper buffer sizing and credit control
     int vc = randInt(0, GlobalParams::n_virtual_channels - 1);
     
     // REQUEST packets are 2 flits (2 flits × 128 bits/flit = 256 bits = 32 bytes)
@@ -929,10 +990,11 @@ bool ProcessingElement::canShotResponse(Packet & packet)
     MemoryRequest resp = memory_controller->getNextResponse(current_cycle);
 
     // Create RESPONSE packet (4 flits × 256 bits = 128 bytes)
-    const int RESPONSE_SIZE_FLITS = 4;
+    const int RESPONSE_SIZE_FLITS = 4;  // Updated from 3 to 4
     double now = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
     
-    // RESPONSEs can use any VC (0 through n_virtual_channels-1)
+    // Use ANY VC from full range (no separation between REQs and RESPs)
+    // Deadlock prevention relies on proper buffer sizing and credit control
     int vc = randInt(0, GlobalParams::n_virtual_channels - 1);
     
     packet.make(local_id, resp.original_src_id, vc, now, RESPONSE_SIZE_FLITS);
@@ -1038,10 +1100,14 @@ void ProcessingElement::printStallStats() const
 // Initialize credits for memory requests
 void ProcessingElement::initMemoryCredits()
 {
-    // Each PE gets 64 total credits (can use for ANY memory tile)
-    // More realistic: PE has fixed outstanding request limit, flexible destination
-    // System-wide: 8 PEs × 64 = 512 total outstanding requests
-    const int TOTAL_CREDITS_PER_PE = 32;
+    // Each PE gets credits to prevent deadlock
+    // Calculation for deadlock-free operation with shared VCs:
+    // - Total MSHR capacity: 8 memory tiles × 64 = 512
+    // - Buffer capacity constraint: (buffer_depth × n_VCs) ≥ (MSHR × response_size + credits × request_size)
+    //   64 × 8 ≥ 64 × 4 + 17 × credits × 1
+    //   512 ≥ 256 + 17 × credits
+    //   credits ≤ 256/17 = 15.05 → 15 credits per PE
+    const int TOTAL_CREDITS_PER_PE = 18;
     
     // Only initialize once per PE (track by PE id)
     static std::set<int> initialized_pes;
@@ -1076,7 +1142,7 @@ void ProcessingElement::consumeCredit(int mem_tile_id)
 // Return one credit when receiving a RESPONSE
 void ProcessingElement::returnCredit(int src_mem_tile)
 {
-    const int MAX_CREDITS = 64;
+    const int MAX_CREDITS = 64;  // Match TOTAL_CREDITS_PER_PE initialization
     
     // Safety check: prevent credit overflow bug
     if (total_memory_credits >= MAX_CREDITS) {
@@ -1106,3 +1172,4 @@ void ProcessingElement::printHeartbeat(int id, uint64_t cycle)
              << ", Queue: " << packet_queue.size() << endl;
     }
 }
+

@@ -10,6 +10,13 @@
 
 #include "Router.h"
 
+// Helper function to create key for oracle tracking
+// Note: For a given feature_id, dst_id is always the same, so we only key on feature_id
+namespace {
+    inline int makeOracleKey(int feature_id, int dst_id) {
+        return feature_id;  // dst_id not needed - each feature maps to one destination
+    }
+}
 
 inline int toggleKthBit(int n, int k)
 {
@@ -18,8 +25,8 @@ inline int toggleKthBit(int n, int k)
 
 void Router::process()
 {
-    txProcess();
-    rxProcess();
+    rxProcess();   // RX first - receive flits and update buffer status
+    txProcess();   // TX second - forward flits based on updated state
 }
 
 void Router::rxProcess()
@@ -28,8 +35,8 @@ void Router::rxProcess()
 	TBufferFullStatus bfs;
 	// Clear outputs and indexes of receiving protocol
 	for (int i = 0; i < DIRECTIONS + 2; i++) {
-	    ack_rx[i].write(0);
-	    current_level_rx[i] = 0;
+	    ack_rx[i].write(true);  // READY/VALID: signal READY on reset
+	    current_level_rx[i] = 0;  // kept for compatibility only, not used in protocol
 	    buffer_full_status_rx[i].write(bfs);
 	}
 	routed_flits = 0;
@@ -37,61 +44,62 @@ void Router::rxProcess()
     } 
     else 
     { 
-	// This process simply sees a flow of incoming flits. All arbitration
-	// and wormhole related issues are addressed in the txProcess()
-	//assert(false);
+	// READY/VALID protocol: req_rx is VALID, ack_rx is READY
+	// A flit is transferred when VALID=1 and READY=1 in the same cycle
 	for (int i = 0; i < DIRECTIONS + 2; i++) {
-	    // To accept a new flit, the following conditions must match:
-	    // 1) there is an incoming request
-	    // 2) there is a free slot in the input buffer of direction i
-	    //LOG<<"****RX****DIRECTION ="<<i<<  endl;
-
-	    if (req_rx[i].read() == 1 - current_level_rx[i])
-	    { 
+	    bool valid = req_rx[i].read();  // upstream VALID signal
+	    bool ready = true;  // assume we're READY unless buffer is full
+	    
+	    if (valid) {
+		// CRITICAL: Must check VC BEFORE reading flit data!
+		// In proper READY/VALID protocol, we peek at control signals first
+		// Since we can't peek VC without reading, we read but only accept if buffer has space
 		Flit received_flit = flit_rx[i].read();
-		//LOG<<"request opposite to the current_level, reading flit "<<received_flit<<endl;
-
 		int vc = received_flit.vc_id;
 
 		if (!buffer[i][vc].IsFull()) 
 		{
-		    // Track input port activity
+		    // Buffer has space - Accept the flit: VALID=1 and READY=1, so transfer occurs
+		    ready = true;  // Signal READY
 		    port_rx_busy[i]++;
-
-		    // Store the incoming flit in the circular buffer
 		    buffer[i][vc].Push(received_flit);
 		    LOG << " Flit " << received_flit << " collected from Input[" << i << "][" << vc <<"]" << endl;
-
 		    power.bufferRouterPush();
 
-		    // Negate the old value for Alternating Bit Protocol (ABP)
-		    //LOG<<"INVERTING CL FROM "<< current_level_rx[i]<< " TO "<<  1 - current_level_rx[i]<<endl;
-		    current_level_rx[i] = 1 - current_level_rx[i];
-
-		    // if a new flit is injected from local PE
 		    if (received_flit.src_id == local_id)
 			power.networkInterface();
+		    
+		    // Track oracle coalescing opportunities (stats only)
+		    trackOracleCoalescing(received_flit);
+		    
+		    // CRITICAL: Update buffer status immediately after Push
+		    // to reflect that this VC might now be full
+		    TBufferFullStatus bfs_push;
+		    for (int v=0; v<GlobalParams::n_virtual_channels; v++)
+			bfs_push.mask[v] = buffer[i][v].IsFull();
+		    buffer_full_status_rx[i].write(bfs_push);
 		}
-
 		else  // buffer full
 		{
-		    // should not happen with the new TBufferFullStatus control signals    
-		    // except for flit coming from local PE, which don't use it 
-		    LOG << " Flit " << received_flit << " buffer full Input[" << i << "][" << vc <<"]" << endl;
-		    assert(i== DIRECTION_LOCAL);
+		    // Buffer full - Signal NOT READY
+		    // CRITICAL: In SystemC, we already read the flit, but we don't store it
+		    // The upstream should keep driving the SAME flit until handshake succeeds
+		    // This is a SystemC limitation - ideally we'd peek VC before reading
+		    ready = false;
+		    LOG << " Flit " << received_flit << " buffer full Input[" << i << "][" << vc <<"], backpressure!" << endl;
 		}
-
+	    } else {
+		// No VALID signal - always READY to accept
+		ready = true;
 	    }
-	    ack_rx[i].write(current_level_rx[i]);
-	    // Signal backpressure at 75% full to allow more pipelining
-	    // This helps achieve better than 50% utilization while preventing overflow
+	    
+	    // Always write READY status to upstream
+	    ack_rx[i].write(ready);
+	    
+	    // Update buffer full status for this port (per-VC granularity)
 	    TBufferFullStatus bfs;
-	    for (int vc=0;vc<GlobalParams::n_virtual_channels;vc++) {
-		unsigned int free_slots = buffer[i][vc].getCurrentFreeSlots();
-		unsigned int max_size = buffer[i][vc].GetMaxBufferSize();
-		// Signal "full" when 75% or more is occupied (25% or less free)
-		bfs.mask[vc] = (free_slots <= max_size / 4);
-	    }
+	    for (int vc=0;vc<GlobalParams::n_virtual_channels;vc++)
+		bfs.mask[vc] = buffer[i][vc].IsFull();
 	    buffer_full_status_rx[i].write(bfs);
 	}
     }
@@ -102,16 +110,80 @@ void Router::txProcess()
 
   if (reset.read()) 
     {
-      // Clear outputs and indexes of transmitting protocol
+      // Clear outputs and output registers
       for (int i = 0; i < DIRECTIONS + 2; i++) 
 	{
-	  req_tx[i].write(0);
-	  current_level_tx[i] = 0;
+	  req_tx[i].write(false);    // No VALID on reset
+	  has_flit[i] = false;       // Output registers empty
+	  current_level_tx[i] = 0;   // Legacy, not used
 	}
     } 
   else 
-    { 
-      // 1st phase: Reservation
+    {
+      // CRITICAL: Update buffer full status at START of txProcess to ensure
+      // downstream sees current buffer state before making injection decisions
+      // This mitigates SystemC non-deterministic process ordering
+      for (int i = 0; i < DIRECTIONS + 2; i++) {
+	  TBufferFullStatus bfs;
+	  for (int vc = 0; vc < GlobalParams::n_virtual_channels; vc++) {
+	      bfs.mask[vc] = buffer[i][vc].IsFull();
+	  }
+	  buffer_full_status_rx[i].write(bfs);
+      }
+      
+ 
+      // ========================================================================
+      // PHASE 1: Drive outputs from registers and handle handshake completion
+      // ========================================================================
+      for (int o = 0; o < DIRECTIONS + 2; o++) {
+	  if (has_flit[o]) {
+	      // We have a flit in the output register - drive VALID and data
+	      flit_tx[o].write(out_reg[o]);
+	      req_tx[o].write(true);  // Assert VALID
+	      
+	      // Check if handshake completes this cycle (VALID=1 && READY=1)
+	      bool ready = ack_tx[o].read();
+	      if (ready) {
+		  // Handshake completed! Clear the output register
+		  has_flit[o] = false;
+		  
+		  // Update stats for successful forwarding
+		  Flit& flit = out_reg[o];
+		  
+		  /* Power & Stats ------------------------------------------------- */
+		  if (o == DIRECTION_HUB) power.r2hLink();
+		  else power.r2rLink();
+
+		  power.bufferRouterPop();
+		  power.crossBar();
+
+		  if (o == DIRECTION_LOCAL) 
+		  {
+		      power.networkInterface();
+		      LOG << "Consumed flit " << flit << endl;
+		      stats.receivedFlit(sc_time_stamp().to_double() / GlobalParams::clock_period_ps, flit);
+		      if (GlobalParams::max_volume_to_be_drained) 
+		      {
+			  if (drained_volume >= GlobalParams::max_volume_to_be_drained)
+			      sc_stop();
+			  else 
+			  {
+			      drained_volume++;
+			      local_drained++;
+			  }
+		      }
+		  }
+		  /* End Power & Stats ------------------------------------------------- */
+	      }
+	  } else {
+	      // No flit in output register - deassert VALID
+	      req_tx[o].write(false);
+	  }
+      }
+      
+      // ========================================================================
+      // PHASE 2: Reservation (find routes for HEAD flits)
+      // ========================================================================
       for (int j = 0; j < DIRECTIONS + 2; j++) 
 	{
 	  int i = (start_from_port + j) % (DIRECTIONS + 2);
@@ -120,10 +192,6 @@ void Router::txProcess()
 	  {
 	      int vc = (start_from_vc[i]+k)%(GlobalParams::n_virtual_channels);
 	      
-	      // Uncomment to enable deadlock checking on buffers. 
-	      // Please also set the appropriate threshold.
-	      // buffer[i].deadlockCheck();
-
 	      if (!buffer[i][vc].IsEmpty()) 
 	      {
 		  Flit flit = buffer[i][vc].Front();
@@ -134,13 +202,11 @@ void Router::txProcess()
 		      // prepare data for routing
 		      RouteData route_data;
 		      route_data.current_id = local_id;
-		      //LOG<< "current_id= "<< route_data.current_id <<" for sending " << flit << endl;
 		      route_data.src_id = flit.src_id;
 		      route_data.dst_id = flit.dst_id;
 		      route_data.dir_in = i;
 		      route_data.vc_id = flit.vc_id;
 
-		      // TODO: see PER POSTERI (adaptive routing should not recompute route if already reserved)
 		      int o = route(route_data);
 
 		      // manage special case of target hub not directly connected to destination
@@ -177,7 +243,7 @@ void Router::txProcess()
 		      {
 			  LOG  << "RT_ALREADY_OTHER_OUT: another output previously reserved for the same flit " << endl;
 		      }
-		      else assert(false); // no meaningful status here
+		      else assert(false);
 		    }
 		}
 	  }
@@ -186,60 +252,82 @@ void Router::txProcess()
 
       start_from_port = (start_from_port + 1) % (DIRECTIONS + 2);
 
-      // 2nd phase: Forwarding
-      //if (local_id==6) LOG<<"*TX*****local_id="<<local_id<<"__ack_tx[0]= "<<ack_tx[0].read()<<endl;
+      // ========================================================================
+      // PHASE 3: Load output registers from input buffers (after handshakes completed)
+      // ========================================================================
       for (int i = 0; i < DIRECTIONS + 2; i++) 
       { 
 	  vector<pair<int,int> > reservations = reservation_table.getReservations(i);
-	  size_t reservation_size = reservations.size();
 	  
-	  if (reservations.size()!=0)
+	  if (reservations.size() != 0)
 	  {
-	      int rnd_idx = rand()%reservations.size();
-	      bool forwared = 0;
+	      int rnd_idx = rand() % reservations.size();
 	      
 	      // Try ALL reservations starting from random index
-	      for (size_t attempt = 0; attempt < reservation_size; attempt++) {
-		  int curr_idx = (rnd_idx + attempt) % reservation_size;
+	      for (size_t attempt = 0; attempt < reservations.size(); attempt++) {
+		  int curr_idx = (rnd_idx + attempt) % reservations.size();
 		  
 		  int o = reservations[curr_idx].first;
 		  int vc = reservations[curr_idx].second;
-		  // LOG<< "found reservation from input= " << i << "_to output= "<<o<<endl;
 		  
-		  // can happen
+		  // Skip if output register already occupied (can't load new flit yet)
+		  if (has_flit[o]) {
+		      continue;  // Output register busy, try next reservation
+		  }
+		  
+		  // Check if input buffer has a flit
 		  if (!buffer[i][vc].IsEmpty())  
 		  {
-		      // power contribution already computed in 1st phase
 		      Flit flit = buffer[i][vc].Front();
-		      //LOG<< "*****TX***Direction= "<<i<< "************"<<endl;
-		      //LOG<<"_cl_tx="<<current_level_tx[o]<<"req_tx="<<req_tx[o].read()<<" _ack= "<<ack_tx[o].read()<< endl;
 		      
-		      if ( (current_level_tx[o] == ack_tx[o].read()) &&
-			   (buffer_full_status_tx[o].read().mask[vc] == false) ) 
+		      // Check downstream buffer space (per-VC backpressure)
+		      bool vc_has_space = !buffer_full_status_tx[o].read().mask[vc];
+		      
+		      if (vc_has_space) 
 		      {
-			  //if (GlobalParams::verbose_mode > VERBOSE_OFF) 
-			  LOG << "Input[" << i << "][" << vc << "] forwarded to Output[" << o << "], flit: " << flit << endl;
-			  
-			  forwared = 1;
+			  LOG << "Loading Output[" << o << "] register from Input[" << i << "][" << vc << "], flit: " << flit << endl;
 			  
 			  // Record path for XY_PATH_REVERSE mode (only for REQUEST HEAD flits)
 			  if (GlobalParams::routing_algorithm == ROUTING_XY_PATH_REVERSE &&
 			      flit.packet_type == PACKET_TYPE_REQUEST &&
 			      (flit.flit_type == FLIT_TYPE_HEAD || flit.flit_type == FLIT_TYPE_HEAD_TAIL) &&
 			      o != DIRECTION_LOCAL) {
-			      // Record this router's ID in the path (only HEAD carries the path)
 			      flit.recorded_path.push_back(local_id);
 			  }
 			  
-			  flit_tx[o].write(flit);
-			  current_level_tx[o] = 1 - current_level_tx[o];
-			  req_tx[o].write(current_level_tx[o]);
+		  // Oracle coalescing: Mark flit if this router saw duplicates
+		  if (flit.packet_type == PACKET_TYPE_REQUEST &&
+		      (flit.flit_type == FLIT_TYPE_HEAD || flit.flit_type == FLIT_TYPE_HEAD_TAIL)) {
+		      
+		      int key = makeOracleKey(flit.feature_id, flit.dst_id);
+		      
+		      auto itg = oracle_global.find(key);
+		      auto itw = oracle_window.find(key);
+		      bool seen_global_dups = (itg != oracle_global.end() && itg->second.count > 1);
+		      bool seen_window_dups = (itw != oracle_window.end() && itw->second.count > 1);
+		      
+		      if (seen_global_dups || seen_window_dups) {
+		          flit.oracle_coalesce_marked = true;
+		      }
+		  }			  // Load into output register
+			  out_reg[o] = flit;
+			  has_flit[o] = true;
 			  
 			  // Track output port activity
 			  port_tx_busy[o]++;
 			  
+			  // Pop from input buffer
 			  buffer[i][vc].Pop();
+			  
+			  // CRITICAL: Update buffer full status immediately after Pop!
+			  // This prevents race condition where downstream sees stale "full" signal
+			  // even though we just freed space by popping
+			  TBufferFullStatus bfs;
+			  for (int v=0; v<GlobalParams::n_virtual_channels; v++)
+			      bfs.mask[v] = buffer[i][v].IsFull();
+			  buffer_full_status_rx[i].write(bfs);
 
+			  // Release reservation if this is TAIL
 			  if (flit.flit_type == FLIT_TYPE_TAIL || flit.flit_type == FLIT_TYPE_HEAD_TAIL)
 			  {
 			      TReservation r;
@@ -247,43 +335,18 @@ void Router::txProcess()
 			      r.vc = vc;
 			      reservation_table.release(r,o);
 			  }
-
-			  /* Power & Stats ------------------------------------------------- */
-			  if (o == DIRECTION_HUB) power.r2hLink();
-			  else
-			      power.r2rLink();
-
-			  power.bufferRouterPop();
-			  power.crossBar();
-
-			  if (o == DIRECTION_LOCAL) 
-			  {
-			      power.networkInterface();
-			      LOG << "Consumed flit " << flit << endl;
-			      stats.receivedFlit(sc_time_stamp().to_double() / GlobalParams::clock_period_ps, flit);
-			      if (GlobalParams:: max_volume_to_be_drained) 
-			      {
-				  if (drained_volume >= GlobalParams:: max_volume_to_be_drained)
-				      sc_stop();
-				  else 
-				  {
-				      drained_volume++;
-				      local_drained++;
-				  }
-			      }
-			  } 
-			  else if (i != DIRECTION_LOCAL) // not generated locally
-			      routed_flits++;
-			  /* End Power & Stats ------------------------------------------------- */
-			  //LOG<<"END_OK_cl_tx="<<current_level_tx[o]<<"_req_tx="<<req_tx[o].read()<<" _ack= "<<ack_tx[o].read()<< endl;
 			  
-			  // Successfully forwarded - break out of attempt loop
+			  // Track routed flits (not locally generated)
+			  if (i != DIRECTION_LOCAL && o != DIRECTION_LOCAL) {
+			      routed_flits++;
+			  }
+
+			  // Successfully loaded - break to try next input
 			  break;
 		      }
 		  }
 	      }  // End for loop over all reservations
-	  } // if not reserved 
-	 // else LOG<<"we have no reservation for direction "<<i<< endl;
+	  }
       } // for loop directions
 
       if ((int)(sc_time_stamp().to_double() / GlobalParams::clock_period_ps)%2==0)
@@ -333,12 +396,18 @@ void Router::perCycleUpdate()
 	power.leakageLinkRouter2Hub();
 	
 	// Track buffer occupancy every cycle
+	// Count both input buffers AND output registers (pipeline stage)
 	total_observation_cycles++;
 	buffer_samples++;
 	for (int i = 0; i < DIRECTIONS + 2; i++) {
 	    int occupancy = 0;
+	    // Input buffers (per-VC storage)
 	    for (int vc = 0; vc < GlobalParams::n_virtual_channels; vc++) {
 		occupancy += buffer[i][vc].Size();
+	    }
+	    // Output register (1 flit pipeline stage per direction)
+	    if (has_flit[i]) {
+		occupancy += 1;
 	    }
 	    buffer_occupancy_sum[i] += occupancy;
 	}
@@ -561,6 +630,14 @@ void Router::configure(const int _id,
         port_tx_busy[i] = 0;
         buffer_occupancy_sum[i] = 0;
     }
+    
+    // Initialize oracle coalescing stats
+    oracle_global_total_heads = 0;
+    oracle_global_coalesced_heads = 0;
+    oracle_window_total_heads = 0;
+    oracle_window_coalesced_heads = 0;
+    oracle_inflight_total_heads = 0;
+    oracle_inflight_coalesced_heads = 0;
   
 
     if (grt.isValid())
@@ -730,5 +807,171 @@ void Router::printLinkUtilization() const
         cout << "    " << dir_names[i] << ": " 
              << fixed << setprecision(1) << util << "% "
              << "(" << port_tx_busy[i] << "/" << total_observation_cycles << " cyc)" << endl;
+    }
+}
+
+// Oracle coalescing tracking - called when a flit enters the router
+void Router::trackOracleCoalescing(const Flit &f)
+{
+    // Get current cycle (used by multiple oracles)
+    uint64_t cur_cycle = (uint64_t)(sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
+    
+    // Build key: feature_id (dst_id is deterministic for each feature_id)
+    int key = makeOracleKey(f.feature_id, f.dst_id);
+    
+    // ========================================================================
+    // HANDLE RESPONSE PACKETS: Manage batch lifecycle
+    // ========================================================================
+    if (f.packet_type == PACKET_TYPE_RESPONSE) {
+        if (f.flit_type == FLIT_TYPE_TAIL || f.flit_type == FLIT_TYPE_HEAD_TAIL) {
+            auto it = oracle_inflight.find(key);
+            if (it != oracle_inflight.end()) {
+                // Check if this response is for the CURRENT batch or a PREVIOUS batch
+                if (it->second.pending_old_responses > 0) {
+                    // This response is for a PREVIOUS batch (coalesced request from old batch)
+                    // Decrement pending counter but DON'T affect current batch
+                    it->second.pending_old_responses--;
+                    
+                    // If no more old responses pending and current batch is also done, erase
+                    if (it->second.pending_old_responses == 0 && it->second.outstanding == 0) {
+                        oracle_inflight.erase(it);
+                    }
+                } else {
+                    // This response is for the CURRENT batch
+                    // This is the FIRST response - it ends the current batch
+                    // Move outstanding count to pending_old_responses (except the first one)
+                    uint32_t coalesced_count = it->second.outstanding - 1;
+                    
+                    if (coalesced_count > 0) {
+                        // There were coalesced requests - their responses are still coming
+                        // Keep entry alive but mark current batch as done
+                        it->second.outstanding = 0;
+                        it->second.pending_old_responses = coalesced_count;
+                    } else {
+                        // No coalesced requests - erase immediately
+                        oracle_inflight.erase(it);
+                    }
+                }
+            }
+            // If entry not found, this is a response for an old batch that's fully cleaned up (OK)
+        }
+        return;  // Done processing response
+    }
+    
+    // ========================================================================
+    // HANDLE REQUEST PACKETS: Track coalescing opportunities
+    // ========================================================================
+    if (f.packet_type != PACKET_TYPE_REQUEST) {
+        return;  // Not a request or response - ignore
+    }
+    
+    if (f.flit_type != FLIT_TYPE_HEAD && f.flit_type != FLIT_TYPE_HEAD_TAIL) {
+        return;  // Only track HEAD flits for requests
+    }
+    
+    // Skip if already marked as coalesced at an upstream router
+    if (f.oracle_coalesce_marked) {
+        return;
+    }
+    
+    // ========================================================================
+    // GLOBAL ORACLE (no time window - unlimited time)
+    // ========================================================================
+    oracle_global_total_heads++;
+    
+    auto &entry = oracle_global[key];
+    if (entry.count == 0) {
+        // First time seeing this feature_id at this router
+        entry.first_cycle = cur_cycle;
+        entry.count = 1;
+    } else {
+        // This is a duplicate - could have been coalesced at this router
+        entry.count++;
+        oracle_global_coalesced_heads++;
+    }
+    
+    // ========================================================================
+    // WINDOWED ORACLE (300-cycle window)
+    // ========================================================================
+    static const uint64_t ORACLE_WINDOW = 300;
+    
+    oracle_window_total_heads++;
+    
+    auto &wentry = oracle_window[key];
+    if (wentry.count == 0) {
+        // First time seeing this feature_id at this router
+        wentry.first_cycle = cur_cycle;
+        wentry.count = 1;
+    } else {
+        if (cur_cycle <= wentry.first_cycle + ORACLE_WINDOW) {
+            // Within window - can be coalesced
+            wentry.count++;
+            oracle_window_coalesced_heads++;
+        } else {
+            // Outside window - start a new window
+            wentry.first_cycle = cur_cycle;
+            wentry.count = 1;
+        }
+    }
+    
+    // ========================================================================
+    // IN-FLIGHT ORACLE (until first response returns)
+    // ========================================================================
+    oracle_inflight_total_heads++;
+    
+    // Check if there's already an in-flight request for this feature
+    auto it = oracle_inflight.find(key);
+    if (it != oracle_inflight.end() && it->second.outstanding > 0) {
+        // There is an ACTIVE batch (outstanding > 0) for this feature at this router
+        // This request can be coalesced with it
+        oracle_inflight_coalesced_heads++;
+        it->second.outstanding++;  // Track how many were coalesced in this batch
+    } else {
+        // Either no entry exists, OR entry exists but current batch is done (outstanding == 0)
+        // and we're just waiting for old responses to drain.
+        // Either way, this is a MISS - start a NEW batch
+        // NOTE: With XY routing (deterministic), responses arrive in-order, so pending_old_responses
+        // will correctly track old batch responses without mixing with new batch responses.
+        OracleInflightEntry inf;
+        inf.first_cycle = cur_cycle;
+        inf.outstanding = 1;
+        inf.pending_old_responses = (it != oracle_inflight.end()) ? it->second.pending_old_responses : 0;
+        oracle_inflight[key] = inf;
+    }
+}
+
+// Print oracle coalescing statistics for this router
+void Router::printOracleCoalescingStats() const
+{
+    cout << "Router[" << local_id << "] Oracle Coalescing Stats:" << endl;
+    
+    cout << "  GLOBAL (no window):" << endl;
+    cout << "    Heads seen:        " << oracle_global_total_heads << endl;
+    cout << "    Coalesced heads:   " << oracle_global_coalesced_heads << endl;
+    if (oracle_global_total_heads > 0) {
+        cout << "    Coalescing ratio:  "
+             << fixed << setprecision(1)
+             << (100.0 * oracle_global_coalesced_heads / oracle_global_total_heads)
+             << "%" << endl;
+    }
+    
+    cout << "  WINDOW (<= 300 cyc):" << endl;
+    cout << "    Heads seen:        " << oracle_window_total_heads << endl;
+    cout << "    Coalesced heads:   " << oracle_window_coalesced_heads << endl;
+    if (oracle_window_total_heads > 0) {
+        cout << "    Coalescing ratio:  "
+             << fixed << setprecision(1)
+             << (100.0 * oracle_window_coalesced_heads / oracle_window_total_heads)
+             << "%" << endl;
+    }
+    
+    cout << "  IN-FLIGHT (until reply):" << endl;
+    cout << "    Heads seen:        " << oracle_inflight_total_heads << endl;
+    cout << "    Coalesced heads:   " << oracle_inflight_coalesced_heads << endl;
+    if (oracle_inflight_total_heads > 0) {
+        cout << "    Coalescing ratio:  "
+             << fixed << setprecision(1)
+             << (100.0 * oracle_inflight_coalesced_heads / oracle_inflight_total_heads)
+             << "%" << endl;
     }
 }

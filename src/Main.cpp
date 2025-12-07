@@ -168,6 +168,18 @@ int sc_main(int arg_num, char *arg_vet[])
         }
     }
     
+    // Show router link utilization for memory tile routers
+    cout << endl << "Memory Tile Router Link Utilization:" << endl;
+    vector<int> memory_tile_ids = {1, 2, 3, 5, 9, 10, 14, 15, 19, 21, 22, 23};
+    for (int tile_id : memory_tile_ids) {
+        if (tile_id < GlobalParams::mesh_dim_x * GlobalParams::mesh_dim_y) {
+            int x = tile_id % GlobalParams::mesh_dim_x;
+            int y = tile_id / GlobalParams::mesh_dim_x;
+            n->t[x][y]->r->printLinkUtilization();
+            cout << endl;
+        }
+    }
+    
     // Show router link utilization (focus on interior routers and hotspots)
     cout << endl << "Router Link Utilization (Interior and Critical Routers):" << endl;
     // Print routers in the center (high traffic convergence points)
@@ -177,6 +189,17 @@ int sc_main(int arg_num, char *arg_vet[])
         int y = coord.second;
         if (x < GlobalParams::mesh_dim_x && y < GlobalParams::mesh_dim_y) {
             n->t[x][y]->r->printLinkUtilization();
+            cout << endl;
+        }
+    }
+    
+    // Show oracle coalescing statistics for all routers
+    cout << endl << "===========================================================" << endl;
+    cout << "Oracle Coalescing Statistics (Request Deduplication Potential)" << endl;
+    cout << "===========================================================" << endl;
+    for (int y = 0; y < GlobalParams::mesh_dim_y; y++) {
+        for (int x = 0; x < GlobalParams::mesh_dim_x; x++) {
+            n->t[x][y]->r->printOracleCoalescingStats();
             cout << endl;
         }
     }

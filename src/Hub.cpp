@@ -254,8 +254,8 @@ void Hub::antennaToTileProcess()
 	{
 		for (int i = 0; i < num_ports; i++)
 		{
-			req_tx[i]->write(0);
-			current_level_tx[i] = 0;
+			req_tx[i]->write(false);  // VALID = 0
+			current_level_tx[i] = 0;  // kept for compatibility, not used
 		}
 		return;
 	}
@@ -291,14 +291,17 @@ void Hub::antennaToTileProcess()
 				Flit flit = buffer_to_tile[i][vc].Front();
 
 				LOG << "Flit " << flit << " found on buffer_to_tile[" << i <<"][" << vc << "] " << endl;
-				if (current_level_tx[i] == ack_tx[i].read() &&
-					buffer_full_status_tx[i].read().mask[vc] == false)
+				
+				// READY/VALID protocol: check if receiver can accept (READY) and has VC space
+				bool ready = ack_tx[i].read();
+				bool vc_has_space = (buffer_full_status_tx[i].read().mask[vc] == false);
+				
+				if (ready && vc_has_space)
 				{
 					LOG << "Flit " << flit << " moved from buffer_to_tile[" << i <<"][" << vc << "] to signal flit_tx["<<i<<"] " << endl;
 
 					flit_tx[i].write(flit);
-					current_level_tx[i] = 1 - current_level_tx[i];
-					req_tx[i].write(current_level_tx[i]);
+					req_tx[i].write(true);  // VALID = 1
 
 					buffer_to_tile[i][vc].Pop();
 					power.bufferToTilePop();
@@ -308,8 +311,13 @@ void Hub::antennaToTileProcess()
 				else
 				{
 					LOG << "Flit " << flit << " cannot move from buffer_to_tile[" << i <<"] [" << vc << "] to signal flit_tx["<<i<<"] " << endl;
+					req_tx[i].write(false);  // VALID = 0
 				}
 			}//if buffer not empty
+			else
+			{
+				req_tx[i].write(false);  // VALID = 0 when no data
+			}
 		}
 		start_from_vc[i] = (start_from_vc[i]+1)%GlobalParams::n_virtual_channels;
 	}
@@ -448,9 +456,9 @@ void Hub::tileToAntennaProcess()
 		TBufferFullStatus bfs;
 		for (int i = 0; i < num_ports; i++)
 		{
-			ack_rx[i]->write(0);
+			ack_rx[i]->write(true);  // READY = 1 on reset
 			buffer_full_status_rx[i].write(bfs);
-			current_level_rx[i] = 0;
+			current_level_rx[i] = 0;  // kept for compatibility, not used
 		}
 		return;
 	}
@@ -602,8 +610,11 @@ void Hub::tileToAntennaProcess()
 
 	for (int i = 0; i < num_ports; i++)
 	{
+		// READY/VALID protocol: check if sender has data (VALID)
+		bool valid = req_rx[i]->read();
+		bool ready = true;  // default to ready
 
-		if (req_rx[i]->read() == 1 - current_level_rx[i])
+		if (valid)
 		{
 			Flit received_flit = flit_rx[i]->read();
 			int vc = received_flit.vc_id;
@@ -623,16 +634,16 @@ void Hub::tileToAntennaProcess()
 
 				buffer_from_tile[i][vc].Push(received_flit);
 				power.bufferFromTilePush();
-
-				current_level_rx[i] = 1 - current_level_rx[i];
 			}
 			else
 			{
 				LOG << "Buffer Full: Cannot store " << received_flit << " on buffer_from_tile[" << i << "][" << vc << "]" << endl;
-				//buffer_from_tile[i][TODO_VC].Print();
+				ready = false;  // Not ready if buffer is full
 			}
 		}
-		ack_rx[i]->write(current_level_rx[i]);
+		
+		ack_rx[i]->write(ready);  // READY signal
+		
 		// updates the mask of VCs to prevent incoming data on full buffers
 		TBufferFullStatus bfs;
 		for (int vc=0;vc<GlobalParams::n_virtual_channels;vc++)

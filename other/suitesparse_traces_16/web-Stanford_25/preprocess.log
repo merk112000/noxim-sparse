@@ -1,0 +1,57 @@
+Reading matrix from /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/tamu_unprocessed/web-Stanford/web-Stanford.mtx
+Started reading mm file: /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/tamu_unprocessed/web-Stanford/web-Stanford.mtx
+Header: matrix coordinate pattern general
+Time to read mm file (seconds): 0.418764
+Matrix: 281903 x 281903  nnz = 2312497
+Mesh: 4x4, num_nodes = 16, num_banks = 4, num_pes = 12
+Row-block size = 1024, num_blocks = 276
+PE[0] (router 0) gets 23 row blocks.
+PE[1] (router 1) gets 23 row blocks.
+PE[2] (router 2) gets 23 row blocks.
+PE[3] (router 3) gets 23 row blocks.
+PE[4] (router 5) gets 23 row blocks.
+PE[5] (router 6) gets 23 row blocks.
+PE[6] (router 9) gets 23 row blocks.
+PE[7] (router 10) gets 23 row blocks.
+PE[8] (router 12) gets 23 row blocks.
+PE[9] (router 13) gets 23 row blocks.
+PE[10] (router 14) gets 23 row blocks.
+PE[11] (router 15) gets 23 row blocks.
+Tile parameters: tile_rows = 1024, tile_cols = 1024
+Computed global column-tile hotness. Example:
+  ct=221 hotness=44137
+  ct=229 hotness=30599
+  ct=209 hotness=26126
+  ct=163 hotness=25288
+  ct=103 hotness=25032
+  ct=235 hotness=24948
+  ct=37 hotness=24899
+  ct=67 hotness=24810
+  ct=193 hotness=24467
+  ct=239 hotness=24305
+PE[0] (router 0) processing 23 row blocks.
+Wrote trace for PE[0] (router 0) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Stanford_25/pe_0.trace
+PE[1] (router 1) processing 23 row blocks.
+Wrote trace for PE[1] (router 1) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Stanford_25/pe_1.trace
+PE[2] (router 2) processing 23 row blocks.
+Wrote trace for PE[2] (router 2) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Stanford_25/pe_2.trace
+PE[3] (router 3) processing 23 row blocks.
+Wrote trace for PE[3] (router 3) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Stanford_25/pe_3.trace
+PE[4] (router 5) processing 23 row blocks.
+Wrote trace for PE[4] (router 5) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Stanford_25/pe_5.trace
+PE[5] (router 6) processing 23 row blocks.
+Wrote trace for PE[5] (router 6) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Stanford_25/pe_6.trace
+PE[6] (router 9) processing 23 row blocks.
+Wrote trace for PE[6] (router 9) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Stanford_25/pe_9.trace
+PE[7] (router 10) processing 23 row blocks.
+Wrote trace for PE[7] (router 10) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Stanford_25/pe_10.trace
+PE[8] (router 12) processing 23 row blocks.
+Wrote trace for PE[8] (router 12) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Stanford_25/pe_12.trace
+PE[9] (router 13) processing 23 row blocks.
+Wrote trace for PE[9] (router 13) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Stanford_25/pe_13.trace
+PE[10] (router 14) processing 23 row blocks.
+Wrote trace for PE[10] (router 14) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Stanford_25/pe_14.trace
+PE[11] (router 15) processing 23 row blocks.
+Wrote trace for PE[11] (router 15) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Stanford_25/pe_15.trace
+Wrote reuse stats to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Stanford_25/reuse_stats.txt
+Done generating traces.

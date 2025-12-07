@@ -53,8 +53,13 @@ SC_MODULE(ProcessingElement)
 
     // Registers
     int local_id;		// Unique identification number
-    bool current_level_rx;	// Current level for Alternating Bit Protocol (ABP)
-    bool current_level_tx;	// Current level for Alternating Bit Protocol (ABP)
+    bool current_level_rx;	// Legacy variable from ABP, not used in READY/VALID protocol
+    bool current_level_tx;	// Legacy variable from ABP, not used in READY/VALID protocol
+    
+    // READY/VALID output register - one flit for TX
+    bool has_flit;              // True if output register contains a valid flit
+    Flit out_reg;               // Output register holding flit to transmit
+    
     queue < Packet > packet_queue;	// Local queue of packets
     bool transmittedAtPreviousCycle;	// Used for distributions with memory
     
@@ -79,6 +84,7 @@ SC_MODULE(ProcessingElement)
     uint64_t total_injection_attempts;           // Total cycles attempted to inject
 
     // Functions
+    void process();         // Master process that calls RX then TX in correct order
     void rxProcess();		// The receiving process
     void txProcess();		// The transmitting process
     bool canShot(Packet & packet);	// True when the packet must be shot
@@ -103,6 +109,8 @@ SC_MODULE(ProcessingElement)
     vector<TraceEvent> trace_events;	// Loaded trace events for this PE
     size_t next_event_idx;		// Index of next event to inject
     uint64_t last_injection_cycle;	// Last cycle when we injected a request (for spacing)
+    int next_vc_request;		// Round-robin VC counter for REQUEST packets
+    int next_vc_response;		// Round-robin VC counter for RESPONSE packets
     void loadTraceFile();		// Load trace file for this PE
     bool canShotTrace(Packet & packet);	// Trace-driven packet generation
     bool isMemoryTile(int id);		// Check if a tile ID is a memory controller
@@ -140,16 +148,14 @@ SC_MODULE(ProcessingElement)
 
     // Constructor
     SC_CTOR(ProcessingElement) {
-	SC_METHOD(rxProcess);
+	SC_METHOD(process);    // Master process
 	sensitive << reset;
-	sensitive << clock.pos();
-
-	SC_METHOD(txProcess);
-	sensitive << reset;
-	sensitive << clock.pos();
+	sensitive << clock.pos();  // Run on rising edge
 
 	next_event_idx = 0;
 	last_injection_cycle = 0;
+	next_vc_request = 0;
+	next_vc_response = 0;
 	last_heartbeat_cycle = 0;
 	total_requests_injected = 0;
 	total_responses_injected = 0;

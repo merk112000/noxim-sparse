@@ -1,0 +1,36 @@
+# Global feature reuse stats across all PEs
+num_features 1519452
+num_multiPE_features 1299385
+fraction_features_multiPE 0.855167
+total_uses 30622564
+multiPE_uses 30384536
+fraction_uses_multiPE 0.992227
+
+# Histogram: features used by exactly k PEs
+features_used_by_1_PEs 220067
+features_used_by_2_PEs 151223
+features_used_by_3_PEs 119506
+features_used_by_4_PEs 102633
+features_used_by_5_PEs 93634
+features_used_by_6_PEs 88979
+features_used_by_7_PEs 87301
+features_used_by_8_PEs 88226
+features_used_by_9_PEs 93436
+features_used_by_10_PEs 103192
+features_used_by_11_PEs 127794
+features_used_by_12_PEs 243461
+
+# Per-PE stats
+PE_index router_id total_uses unique_features multiPE_unique_features fraction_multiPE_unique
+0 0 2617557 823260 804833 0.977617
+1 1 2566568 820155 801661 0.977451
+2 2 2562370 817616 799494 0.977836
+3 3 2566540 818403 799985 0.977495
+4 5 2579051 820845 802429 0.977565
+5 6 2588308 821414 802950 0.977522
+6 9 2545665 813917 795512 0.977387
+7 10 2541871 815693 797103 0.97721
+8 12 2536882 815325 797036 0.977568
+9 13 2470764 812366 794386 0.977867
+10 14 2508101 814625 796588 0.977859
+11 15 2538887 817013 798588 0.977448

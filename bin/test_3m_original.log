@@ -1,0 +1,15 @@
+
+        SystemC 2.3.3-Accellera --- Nov 24 2025 15:47:08
+        Copyright (c) 1996-2018 by all Contributors,
+        ALL RIGHTS RESERVED
+	--------------------------------------------
+		Noxim - the NoC Simulator
+		(C) University of Catania
+	--------------------------------------------
+Catania V., Mineo A., Monteleone S., Palesi M., and Patti D. (2016) Cycle-Accurate Network on Chip Simulation with Noxim. ACM Trans. Model. Comput. Simul. 27, 1, Article 4 (August 2016), 25 pages. DOI: https://doi.org/10.1145/2953878
+
+
+Loading configuration from file "test_3m_original.yaml"... Done
+Loading power configurations from file "power.yaml"... Done
+Reset for 1000 cycles...  done! 
+ Now running for 3000000 cycles...

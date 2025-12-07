@@ -1,0 +1,57 @@
+Reading matrix from /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/tamu_unprocessed/soc-LiveJournal1/soc-LiveJournal1.mtx
+Started reading mm file: /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/tamu_unprocessed/soc-LiveJournal1/soc-LiveJournal1.mtx
+Header: matrix coordinate pattern general
+Time to read mm file (seconds): 9.19281
+Matrix: 4847571 x 4847571  nnz = 68993773
+Mesh: 4x4, num_nodes = 16, num_banks = 4, num_pes = 12
+Row-block size = 1024, num_blocks = 4734
+PE[0] (router 0) gets 395 row blocks.
+PE[1] (router 1) gets 395 row blocks.
+PE[2] (router 2) gets 395 row blocks.
+PE[3] (router 3) gets 395 row blocks.
+PE[4] (router 5) gets 395 row blocks.
+PE[5] (router 6) gets 395 row blocks.
+PE[6] (router 9) gets 394 row blocks.
+PE[7] (router 10) gets 394 row blocks.
+PE[8] (router 12) gets 394 row blocks.
+PE[9] (router 13) gets 394 row blocks.
+PE[10] (router 14) gets 394 row blocks.
+PE[11] (router 15) gets 394 row blocks.
+Tile parameters: tile_rows = 1024, tile_cols = 1024
+Computed global column-tile hotness. Example:
+  ct=1611 hotness=265270
+  ct=99 hotness=260922
+  ct=90 hotness=241470
+  ct=94 hotness=231274
+  ct=93 hotness=218913
+  ct=92 hotness=201099
+  ct=96 hotness=182384
+  ct=200 hotness=170444
+  ct=89 hotness=166021
+  ct=97 hotness=163731
+PE[0] (router 0) processing 395 row blocks.
+Wrote trace for PE[0] (router 0) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/soc-LiveJournal1_25/pe_0.trace
+PE[1] (router 1) processing 395 row blocks.
+Wrote trace for PE[1] (router 1) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/soc-LiveJournal1_25/pe_1.trace
+PE[2] (router 2) processing 395 row blocks.
+Wrote trace for PE[2] (router 2) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/soc-LiveJournal1_25/pe_2.trace
+PE[3] (router 3) processing 395 row blocks.
+Wrote trace for PE[3] (router 3) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/soc-LiveJournal1_25/pe_3.trace
+PE[4] (router 5) processing 395 row blocks.
+Wrote trace for PE[4] (router 5) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/soc-LiveJournal1_25/pe_5.trace
+PE[5] (router 6) processing 395 row blocks.
+Wrote trace for PE[5] (router 6) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/soc-LiveJournal1_25/pe_6.trace
+PE[6] (router 9) processing 394 row blocks.
+Wrote trace for PE[6] (router 9) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/soc-LiveJournal1_25/pe_9.trace
+PE[7] (router 10) processing 394 row blocks.
+Wrote trace for PE[7] (router 10) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/soc-LiveJournal1_25/pe_10.trace
+PE[8] (router 12) processing 394 row blocks.
+Wrote trace for PE[8] (router 12) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/soc-LiveJournal1_25/pe_12.trace
+PE[9] (router 13) processing 394 row blocks.
+Wrote trace for PE[9] (router 13) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/soc-LiveJournal1_25/pe_13.trace
+PE[10] (router 14) processing 394 row blocks.
+Wrote trace for PE[10] (router 14) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/soc-LiveJournal1_25/pe_14.trace
+PE[11] (router 15) processing 394 row blocks.
+Wrote trace for PE[11] (router 15) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/soc-LiveJournal1_25/pe_15.trace
+Wrote reuse stats to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/soc-LiveJournal1_25/reuse_stats.txt
+Done generating traces.

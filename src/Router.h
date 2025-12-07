@@ -12,6 +12,7 @@
 #define __NOXIMROUTER_H__
 
 #include <systemc.h>
+#include <unordered_map>
 #include "DataStructs.h"
 #include "Buffer.h"
 #include "Stats.h"
@@ -63,8 +64,13 @@ SC_MODULE(Router)
     int routing_type;		                // Type of routing algorithm
     int selection_type;
     BufferBank buffer[DIRECTIONS + 2];		// buffer[direction][virtual_channel] 
-    bool current_level_rx[DIRECTIONS + 2];	// Current level for Alternating Bit Protocol (ABP)
-    bool current_level_tx[DIRECTIONS + 2];	// Current level for Alternating Bit Protocol (ABP)
+    bool current_level_rx[DIRECTIONS + 2];	// Legacy variable from ABP, not used in READY/VALID protocol
+    bool current_level_tx[DIRECTIONS + 2];	// Legacy variable from ABP, not used in READY/VALID protocol
+    
+    // READY/VALID output registers - one flit per output port
+    bool has_flit[DIRECTIONS + 2];              // True if output register contains a valid flit
+    Flit out_reg[DIRECTIONS + 2];               // Output register holding flit to transmit
+    
     Stats stats;		                // Statistics
     Power power;
     LocalRoutingTable routing_table;		// Routing table
@@ -79,6 +85,36 @@ SC_MODULE(Router)
     uint64_t total_observation_cycles;           // Total cycles observed (for utilization calc)
     uint64_t buffer_occupancy_sum[DIRECTIONS + 2]; // Sum of buffer occupancy over time
     uint64_t buffer_samples;                     // Number of samples taken 
+    
+    // Oracle coalescing instrumentation (stats only, no functional changes)
+    struct OracleEntry {
+        uint64_t first_cycle;   // when first HEAD for this feature arrived at this router
+        int count;              // how many HEADs seen here (only unmarked ones)
+        
+        OracleEntry() : first_cycle(0), count(0) {}
+    };
+    
+    std::unordered_map<int, OracleEntry> oracle_global;   // no time window, keyed by feature_id
+    std::unordered_map<int, OracleEntry> oracle_window;   // 200-cycle window, keyed by feature_id
+    
+    // In-flight oracle: track outstanding requests until responses return
+    struct OracleInflightEntry {
+        uint64_t first_cycle;   // cycle when first request for this feature arrived (for debugging)
+        uint32_t outstanding;   // number of outstanding requests for THIS batch at this router
+        uint32_t pending_old_responses; // responses still expected from PREVIOUS batch (ignore these)
+        
+        OracleInflightEntry() : first_cycle(0), outstanding(0), pending_old_responses(0) {}
+    };
+    
+    std::unordered_map<int, OracleInflightEntry> oracle_inflight;  // keyed by feature_id
+    
+    // Oracle statistics
+    uint64_t oracle_global_total_heads;      // unmarked REQUEST HEADs seen
+    uint64_t oracle_global_coalesced_heads;  // heads that participate in >1 at this router (no window)
+    uint64_t oracle_window_total_heads;
+    uint64_t oracle_window_coalesced_heads;
+    uint64_t oracle_inflight_total_heads;      // all request heads considered
+    uint64_t oracle_inflight_coalesced_heads;  // heads that arrived while another for same feature was outstanding
     
     // Functions
 
@@ -151,6 +187,10 @@ SC_MODULE(Router)
     
     // Link utilization statistics
     void printLinkUtilization() const;
+    
+    // Oracle coalescing tracking (instrumentation only)
+    void trackOracleCoalescing(const Flit &f);
+    void printOracleCoalescingStats() const;
 };
 
 #endif

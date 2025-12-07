@@ -159,6 +159,9 @@ struct Flit {
     
     // Path recording for reverse routing (XY_PATH_REVERSE mode)
     vector<int> recorded_path;  // Sequence of router IDs traversed by the request
+    
+    // Oracle coalescing instrumentation (stats only, no functional impact)
+    bool oracle_coalesce_marked;  // True if this flow was already coalesced at an upstream router
 
     inline bool operator ==(const Flit & flit) const {
 	return (flit.src_id == src_id && flit.dst_id == dst_id

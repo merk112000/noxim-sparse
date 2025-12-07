@@ -1,0 +1,57 @@
+Reading matrix from /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/tamu_unprocessed/web-Google/web-Google.mtx
+Started reading mm file: /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/tamu_unprocessed/web-Google/web-Google.mtx
+Header: matrix coordinate pattern general
+Time to read mm file (seconds): 0.768074
+Matrix: 916428 x 916428  nnz = 5105039
+Mesh: 4x4, num_nodes = 16, num_banks = 4, num_pes = 12
+Row-block size = 1024, num_blocks = 895
+PE[0] (router 0) gets 75 row blocks.
+PE[1] (router 1) gets 75 row blocks.
+PE[2] (router 2) gets 75 row blocks.
+PE[3] (router 3) gets 75 row blocks.
+PE[4] (router 5) gets 75 row blocks.
+PE[5] (router 6) gets 75 row blocks.
+PE[6] (router 9) gets 75 row blocks.
+PE[7] (router 10) gets 74 row blocks.
+PE[8] (router 12) gets 74 row blocks.
+PE[9] (router 13) gets 74 row blocks.
+PE[10] (router 14) gets 74 row blocks.
+PE[11] (router 15) gets 74 row blocks.
+Tile parameters: tile_rows = 1024, tile_cols = 1024
+Computed global column-tile hotness. Example:
+  ct=894 hotness=14464
+  ct=887 hotness=13199
+  ct=892 hotness=13130
+  ct=864 hotness=12418
+  ct=893 hotness=12277
+  ct=475 hotness=12115
+  ct=524 hotness=11747
+  ct=583 hotness=10818
+  ct=733 hotness=10767
+  ct=159 hotness=10604
+PE[0] (router 0) processing 75 row blocks.
+Wrote trace for PE[0] (router 0) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Google_25/pe_0.trace
+PE[1] (router 1) processing 75 row blocks.
+Wrote trace for PE[1] (router 1) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Google_25/pe_1.trace
+PE[2] (router 2) processing 75 row blocks.
+Wrote trace for PE[2] (router 2) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Google_25/pe_2.trace
+PE[3] (router 3) processing 75 row blocks.
+Wrote trace for PE[3] (router 3) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Google_25/pe_3.trace
+PE[4] (router 5) processing 75 row blocks.
+Wrote trace for PE[4] (router 5) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Google_25/pe_5.trace
+PE[5] (router 6) processing 75 row blocks.
+Wrote trace for PE[5] (router 6) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Google_25/pe_6.trace
+PE[6] (router 9) processing 75 row blocks.
+Wrote trace for PE[6] (router 9) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Google_25/pe_9.trace
+PE[7] (router 10) processing 74 row blocks.
+Wrote trace for PE[7] (router 10) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Google_25/pe_10.trace
+PE[8] (router 12) processing 74 row blocks.
+Wrote trace for PE[8] (router 12) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Google_25/pe_12.trace
+PE[9] (router 13) processing 74 row blocks.
+Wrote trace for PE[9] (router 13) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Google_25/pe_13.trace
+PE[10] (router 14) processing 74 row blocks.
+Wrote trace for PE[10] (router 14) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Google_25/pe_14.trace
+PE[11] (router 15) processing 74 row blocks.
+Wrote trace for PE[11] (router 15) to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Google_25/pe_15.trace
+Wrote reuse stats to /u/dm68/scratch/src/sst-elements-library-13.1.0/src/sst/elements/rdmaNic/tests_spin/preprocessing/scripts/run_scripts/../../data/suitesparse_traces/web-Google_25/reuse_stats.txt
+Done generating traces.

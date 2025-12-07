@@ -51,10 +51,11 @@ private:
     uint64_t first_request_cycle;       // First cycle we received a request (for accurate util calc)
     
     // DRAM timing parameters (cycles)
-    static const uint64_t DRAM_BASE_LATENCY = 50;  // L_base: minimum latency (DRAM row access)
-    static const uint64_t DRAM_FLIT_INJECTION_INTERVAL = 1;  // Cycles between consecutive FLIT injections (models DRAM data channel BW)
-    static const uint64_t RESPONSE_SIZE_FLITS = 4; // Number of flits per response  
-    static const size_t MAX_OUTSTANDING_REQUESTS = 64;  // Realistic MSHR depth per memory tile (NOT total system)  
+    static const uint64_t DRAM_BASE_LATENCY = 100;  // L_base: minimum latency (DRAM row access)
+    // INTERVAL=0 for maximum bandwidth, with packet_queue backpressure to prevent deadlock
+    static const uint64_t DRAM_FLIT_INJECTION_INTERVAL = 0;  // Cycles between consecutive FLIT injections (0 = back-to-back, 1 = 50%, 2 = 33%)
+    static const uint64_t RESPONSE_SIZE_FLITS = 4; // Number of flits per response (changed from 3 to 4)
+    static const size_t MAX_OUTSTANDING_REQUESTS = 32;  // MSHR depth per memory tile - limited by packet_queue backpressure
     
     // Helper: get current simulation cycle
     uint64_t getCurrentCycle() const {
@@ -72,8 +73,9 @@ public:
           ingress_busy_cycles(0), egress_busy_cycles(0), first_request_cycle(0) {}
     
     // Check if memory controller can accept more requests
+    // Use ready_responses queue size (actual pending work) not in_flight_requests
     bool canAcceptRequest() const {
-        return ready_responses.size() < MAX_OUTSTANDING_REQUESTS;
+         return ready_responses.size() < MAX_OUTSTANDING_REQUESTS;
     }
     
     // Process an incoming REQUEST packet (called when HEAD flit arrives)

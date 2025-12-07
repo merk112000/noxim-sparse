@@ -1,0 +1,51 @@
+# NoC Stress Test: Force continuous 4-flit packet injection
+# This bypasses memory controller to test raw NoC bandwidth capacity
+# Expected: Should see close to 100% link utilization if NoC can handle it
+
+topology: MESH
+mesh_dim_x: 5
+mesh_dim_y: 5
+buffer_depth: 64
+flit_size: 256
+r2h_link_length: 2.0
+r2r_link_length: 1.0
+n_virtual_channels: 8
+
+routing_algorithm: XY
+routing_table_filename: ""
+dyad_threshold: 0.6
+selection_strategy: RANDOM
+
+# No wireless
+use_winoc: false
+use_wirxsleep: false
+
+# SIMULATION PARAMETERS
+clock_period_ps: 600
+reset_time: 1000
+simulation_time: 50000  # Shorter test
+stats_warm_up_time: 5000
+detailed: false
+max_volume_to_be_drained: 0
+show_buffer_stats: false
+
+verbose_mode: VERBOSE_OFF
+trace_mode: false
+trace_filename: ""
+
+# STRESS TEST: Maximum injection rate
+min_packet_size: 4
+max_packet_size: 4
+
+# CRITICAL: To inject EVERY cycle, need both PIR=1.0 AND retransmission=1.0
+# PIR=1.0: 100% chance if didn't transmit last cycle
+# Retrans=1.0: 100% chance even if DID transmit last cycle
+# With 4-flit packets, this attempts to inject 4 flits/cycle into NoC
+packet_injection_rate: 1.0
+
+probability_of_retransmission: 1.0
+
+# Simple random all-to-all traffic
+traffic_distribution: TRAFFIC_RANDOM
+traffic_table_filename: ""
+traffic_hardcoded_filename: ""

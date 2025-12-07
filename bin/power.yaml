@@ -25,6 +25,23 @@ Energy:
         - [64, 32, 1.74e-2, 4.95e-12, 0, 4.71e-12 ]     # interpolated
         - [64, 64, 6.0e-2, 1.0e-11, 0, 0.9e-11  ]     # interpolated
         - [64, 128, 1.14e-1 , 1.92e-11, 0, 1.71e-11 ]     # interpolated
+        - [64, 256, 2.28e-1, 3.84e-11, 0, 3.42e-11]    # interpolated for 256-bit
+        - [128, 16, 3.16e-2 , 5.16e-12, 0, 5.10e-12]     # interpolated
+        - [128, 32, 3.48e-2, 9.90e-12, 0, 9.42e-12 ]     # interpolated
+        - [128, 64, 1.2e-1, 2.0e-11, 0, 1.8e-11  ]     # interpolated
+        - [128, 128, 2.28e-1 , 3.84e-11, 0, 3.42e-11 ]     # interpolated
+        - [128, 256, 4.56e-1, 7.68e-11, 0, 6.84e-11]    # interpolated for 256-bit
+        - [256, 16, 6.32e-2 , 1.032e-11, 0, 1.020e-11]     # interpolated
+        - [256, 32, 6.96e-2, 1.98e-11, 0, 1.884e-11 ]     # interpolated
+        - [256, 64, 2.4e-1, 4.0e-11, 0, 3.6e-11  ]     # interpolated
+        - [256, 128, 4.56e-1 , 7.68e-11, 0, 6.84e-11 ]     # interpolated
+        - [256, 256, 9.12e-1, 1.536e-10, 0, 1.368e-10]    # interpolated for 256-bit
+        - [2, 256, 1.0e-2, 4.50e-12, 0, 2.50e-12]      # interpolated for 256-bit
+        - [4, 256, 1.64e-2, 5.80e-12, 0, 4.0e-12]      # interpolated for 256-bit
+        - [8, 256, 3.0e-2, 8.0e-12, 0, 6.0e-12]        # interpolated for 256-bit
+        - [16, 256, 5.68e-2, 1.23e-11, 0, 1.02e-11]    # interpolated for 256-bit
+        - [32, 256, 1.168e-1, 2.54e-11, 0, 2.22e-11]   # interpolated for 256-bit
+        - [64, 256, 2.28e-1, 3.84e-11, 0, 3.42e-11]    # interpolated for 256-bit
 
 
     # LinkBitLine energy in the form [ Length (mm) Leakage Dynamic ] 
@@ -47,6 +64,7 @@ Energy:
             - [5, 32, 7.49e-4, 2.21e-13]
             - [5, 64, 1.49e-3, 4.00e-13]
             - [5, 128, 2.75e-3, 8.0e-13] #interpolated
+            - [5, 256, 5.50e-3, 1.6e-12] #interpolated for 256-bit
 
         network_interface:
         #   - [FlitSize, Static, Dynamic]
@@ -55,6 +73,7 @@ Energy:
             - [32, 0.0, 0.0]
             - [64, 0.0, 0.0]
             - [128, 0.0, 0.0]
+            - [256, 0.0, 0.0]
             #- [16, 4.43e-4, 2.50e-13]
             #- [32, 8.64e-4, 4.22e-13]
             #- [64, 1.72e-3, 8.35e-13]
@@ -63,6 +82,7 @@ Energy:
         #   Algorithm:   [Static, Dynamic]
             default:     [1.20e-4, 6.00e-14]
             XY:          [1.20e-4, 6.00e-14]
+            XY_PATH_REVERSE: [1.20e-4, 6.00e-14]
             DYAD:        [1.35e-4, 6.75e-14]
             NEGATIVE_FIRST: [1.28e-4, 6.30e-14]
             NORTH_LAST:  [1.28e-4, 6.30e-14]
