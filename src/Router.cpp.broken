@@ -55,180 +55,91 @@ void Router::rxProcess()
 		// In proper READY/VALID protocol, we peek at control signals first
 		// Since we can't peek VC without reading, we read but only accept if buffer has space
 		Flit received_flit = flit_rx[i].read();
-
-        
-        
 		int vc = received_flit.vc_id;
 
-	// === CRITICAL: Flip multicast_allowed at the multicast root router ===
-	// The response travels with multicast_allowed=false from memory until it reaches
-	// the router (multicast_root_id) that actually coalesced THIS specific request.
-	// At that router, we flip it to true so multicast starts there.
-	// Upstream routers with coalesce entries will also multicast.
-	// This fixes the "old vs new request" bug.
-	if (GlobalParams::enable_selective_coalescing &&
-	    received_flit.packet_type == PACKET_TYPE_RESPONSE) {
-	    
-	    if (!received_flit.multicast_allowed &&
-	        received_flit.multicast_root_id == local_id) {
-	        // We are the multicast root for THIS request - flip multicast on!
-	        received_flit.multicast_allowed = true;
-	        
-	        if ((uint64_t)sc_time_stamp().to_double() / GlobalParams::clock_period_ps <= 200000) {
-	            cout << "Router[" << local_id << "] MULTICAST ROOT: Flipping multicast_allowed=true for fid=" 
-	                 << received_flit.feature_id << endl;
-	        }
-	    }
-	}
-
-	// Check if this is a multicast response that would go to McEngine
-	bool will_use_mc_engine = false;
-	bool mc_fifo_has_space = true;
-	int mc_idx_for_head = -1;  // Pre-allocate McEntry for HEAD if needed
-	
-	if (GlobalParams::enable_selective_coalescing && 
-	    received_flit.packet_type == PACKET_TYPE_RESPONSE &&
-	    received_flit.multicast_allowed) {  // CRITICAL: Only if this specific response can multicast
-	    int entry_idx = findCoalesceEntry(received_flit.feature_id);
-	    if (entry_idx >= 0) {
-	        will_use_mc_engine = true;
-	        
-	        if (received_flit.flit_type == FLIT_TYPE_HEAD) {
-	            // For HEAD: Must check if McEngine has free slot
-	            mc_idx_for_head = allocateMcEntry(received_flit.feature_id);
-	            if (mc_idx_for_head < 0) {
-	                // McEngine full - MUST backpressure, cannot downgrade to unicast
-	                mc_fifo_has_space = false;
-	            }
-	            // Note: If allocated successfully, we'll use mc_idx_for_head later
-	        } else if (received_flit.flit_type == FLIT_TYPE_BODY || 
-	                   received_flit.flit_type == FLIT_TYPE_TAIL) {
-	            // For BODY/TAIL: Check existing McEntry FIFO space
-	            auto it = input_to_mc_entry.find(std::make_tuple(i, vc, received_flit.feature_id));
-	            if (it != input_to_mc_entry.end()) {
-	                int mc_idx = it->second;
-	                McEntry &mc = mc_engine[mc_idx];
-	                mc_fifo_has_space = (mc.fifo.size() < McEntry::MAX_FIFO_SIZE);
-	            } else {
-	                // BODY/TAIL arrived but no McEntry exists - protocol violation
-	                mc_fifo_has_space = false;
-	            }
-	        }
-	    }
-	}
-	
-	// Backpressure logic:
-	// - Unicast traffic: check buffer space
-	// - Multicast traffic: check McEngine capacity (McEntry slot + FIFO space)
-	// - CRITICAL: If multicast resource unavailable, MUST backpressure (never downgrade to unicast)
-	bool can_accept = will_use_mc_engine ? mc_fifo_has_space : !buffer[i][vc].IsFull();
-
-	if (can_accept) 
-	{
-	    // Buffer has space - Accept the flit: VALID=1 and READY=1, so transfer occurs
-	    ready = true;  // Signal READY
-	    port_rx_busy[i]++;
-	    
-	    // SELECTIVE COALESCING: Check if this request should be merged
-	    // Handle BOTH single-flit (HEAD_TAIL) and multi-flit (HEAD) packets
-	    bool drop_request = false;
-	    if (GlobalParams::enable_selective_coalescing && 
-	        received_flit.packet_type == PACKET_TYPE_REQUEST && 
-	        (received_flit.flit_type == FLIT_TYPE_HEAD_TAIL || received_flit.flit_type == FLIT_TYPE_HEAD)) {
-	        drop_request = handleRequestCoalescing(received_flit, i);
-	    }
-	    
-	    // MULTICAST ENGINE: Detect RESPONSE packets that need multicasting
-	    bool moved_to_mc_engine = false;
-	    if (GlobalParams::enable_selective_coalescing && 
-	        received_flit.packet_type == PACKET_TYPE_RESPONSE) {
-		        int entry_idx = findCoalesceEntry(received_flit.feature_id);
-		        if (entry_idx >= 0) {
-		            CoalesceEntry &ce = coalesce_table[entry_idx];
-		            std::vector<int> multicast_outputs = getMulticastOutputs(received_flit);
+		if (!buffer[i][vc].IsFull()) 
+		{
+		    // Buffer has space - Accept the flit: VALID=1 and READY=1, so transfer occurs
+		    ready = true;  // Signal READY
+		    port_rx_busy[i]++;
+		    
+		    // SELECTIVE COALESCING: Check if this request should be merged
+		    bool drop_request = false;
+		    if (received_flit.packet_type == PACKET_TYPE_REQUEST) {
+		        drop_request = handleRequestCoalescing(received_flit, i);
+		    }
+		    
+		    // MULTICAST ENGINE: Check if this response should be multicast
+		    bool handle_by_mc_engine = false;
+		    if (received_flit.packet_type == PACKET_TYPE_RESPONSE &&
+		        (received_flit.flit_type == FLIT_TYPE_HEAD || received_flit.flit_type == FLIT_TYPE_HEAD_TAIL)) {
+		        
+		        // Check if this router has a coalesce entry for this feature
+		        int coalesce_idx = findCoalesceEntry(received_flit.feature_id);
+		        if (coalesce_idx >= 0) {
+		            CoalesceEntry &centry = coalesce_table[coalesce_idx];
 		            
-		                /*cerr << "Router[" << local_id << "] RESPONSE fid=" << received_flit.feature_id 
-		                     << " multicast_outputs.size()=" << multicast_outputs.size() << " ports=";
-		                for (int p : multicast_outputs) cerr << p << " ";
-		                cerr << endl;*/
+		            // Count how many requester ports
+		            int num_requesters = 0;
+		            for (int p = 0; p < DIRECTIONS + 2; p++) {
+		                if (centry.requester_ports.test(p)) num_requesters++;
+		            }
 		            
-		            // Move ALL eligible responses to multicast engine, even if only 1 output
-		            if (multicast_outputs.size() >= 1) {
-		                // This response is eligible - move to MC engine
-		                if (received_flit.flit_type == FLIT_TYPE_HEAD) {
-		                    // HEAD flit - use pre-allocated McEntry from backpressure check
-		                    if (mc_idx_for_head >= 0) {
-		                        McEntry &mc = mc_engine[mc_idx_for_head];
-		                        mc.src_memtile = received_flit.src_id;
-                        mc.out_ports_needed.reset();
-                        
-                        // Use feature_id to deterministically assign VC (simple hash)
-                        // This spreads multicasts across all VCs
-                        int assigned_vc = received_flit.feature_id % GlobalParams::n_virtual_channels;
-                        
-                        for (int out : multicast_outputs) {
-		                            mc.out_ports_needed.set(out);
-		                            mc.port[out].needed = true;
-		                            mc.port[out].next_flit_idx = 0;
-		                            mc.port[out].vc = assigned_vc;
+		            if (num_requesters > 1) {
+		                // This is a multicast response! Allocate MC engine entry
+		                int mc_idx = allocateMcEntry(received_flit.feature_id);
+		                if (mc_idx >= 0) {
+		                    // Set up output ports
+		                    for (int p = 0; p < DIRECTIONS + 2; p++) {
+		                        if (centry.requester_ports.test(p)) {
+		                            mc_engine[mc_idx].port[p].needed = true;
+		                            mc_engine[mc_idx].out_ports_needed.set(p);
 		                        }
-                        
-                        // Push HEAD to FIFO (guaranteed space - just allocated)
-                        mc.fifo.push_back(received_flit);
-                        input_to_mc_entry[std::make_tuple(i, vc, received_flit.feature_id)] = mc_idx_for_head;
-                        moved_to_mc_engine = true;
-                        ce.response_started = true;
-		                    } else {
-		                        cerr << "Router[" << local_id << "] FATAL: McEntry not pre-allocated for HEAD fid=" 
-		                             << received_flit.feature_id << " but can_accept was true!" << endl;
-		                        assert(false);
 		                    }
+		                    
+		                    // Push HEAD into engine FIFO
+		                    mc_engine[mc_idx].fifo.push_back(received_flit);
+		                    
+		                    // Track input stream for collecting remaining flits
+		                    input_to_mc_entry[std::make_pair(i, vc)] = mc_idx;
+		                    
+		                    handle_by_mc_engine = true;
+		                    
+		                    LOG << " Multicast HEAD fid=" << received_flit.feature_id 
+		                        << " allocated to MC engine[" << mc_idx << "] with " 
+		                        << num_requesters << " outputs" << endl;
 		                } else {
-		                    // BODY or TAIL flit - find existing McEntry using feature_id
-		                    auto it = input_to_mc_entry.find(std::make_tuple(i, vc, received_flit.feature_id));
-		                    if (it != input_to_mc_entry.end()) {
-		                        int mc_idx = it->second;
-		                        McEntry &mc = mc_engine[mc_idx];
-		                        // Validate feature_id match
-		                        if (mc.feature_id == received_flit.feature_id) {
-		                            // Push to FIFO (space already verified in backpressure check)
-		                            if (mc.fifo.size() < McEntry::MAX_FIFO_SIZE) {
-		                                mc.fifo.push_back(received_flit);
-		                                moved_to_mc_engine = true;
-		                            } else {
-		                                // CRITICAL: This should NEVER happen - we backpressured if FIFO full
-		                                cerr << "Router[" << local_id << "] FATAL: McEngine[" << mc_idx 
-		                                     << "] FIFO full but can_accept was true for fid=" 
-		                                     << received_flit.feature_id << endl;
-		                                assert(false);
-		                            }
-		                        } else {
-		                            cerr << "Router[" << local_id << "] ERROR: feature_id mismatch! "
-		                                << "McEntry[" << mc_idx << "] has fid=" << mc.feature_id
-		                                << " but received fid=" << received_flit.feature_id << endl;
-		                        }
-		                    } else {
-		                        // CRITICAL: BODY/TAIL but no McEntry - should have been backpressured
-		                        cerr << "Router[" << local_id << "] FATAL: BODY/TAIL flit for fid=" 
-		                             << received_flit.feature_id << " but no McEntry exists!" << endl;
-		                        assert(false);
-		                    }
+		                    // Engine full - fallback to unicast
+		                    LOG << " MC engine full for fid=" << received_flit.feature_id 
+		                        << " - using unicast" << endl;
 		                }
 		            }
 		        }
 		    }
 		    
-		    if (!drop_request && !moved_to_mc_engine) {
-		        // Normal path: push flit to buffer
-		        // CRITICAL: Multicast responses should NEVER reach here - they must go to McEngine or be backpressured
-		        if (will_use_mc_engine) {
-		            cerr << "Router[" << local_id << "] FATAL: Multicast response fid=" << received_flit.feature_id
-		                 << " not moved to McEngine but also not backpressured!" << endl;
-		            assert(false);
+		    // Check if this is a BODY/TAIL for an active MC stream
+		    if (!handle_by_mc_engine && received_flit.packet_type == PACKET_TYPE_RESPONSE) {
+		        auto key = std::make_pair(i, vc);
+		        if (input_to_mc_entry.count(key)) {
+		            int mc_idx = input_to_mc_entry[key];
+		            mc_engine[mc_idx].fifo.push_back(received_flit);
+		            handle_by_mc_engine = true;
+		            
+		            // If TAIL, remove mapping
+		            if (received_flit.flit_type == FLIT_TYPE_TAIL || 
+		                received_flit.flit_type == FLIT_TYPE_HEAD_TAIL) {
+		                input_to_mc_entry.erase(key);
+		            }
+		            
+		            LOG << " Multicast BODY/TAIL fid=" << received_flit.feature_id 
+		                << " added to MC engine[" << mc_idx << "]" << endl;
 		        }
-		        
+		    }
+		    
+		    if (!drop_request && !handle_by_mc_engine) {
+		        // Normal path: push flit to buffer
 		        buffer[i][vc].Push(received_flit);
-		       // LOG << " Flit " << received_flit << " collected from Input[" << i << "][" << vc <<"]" << endl;
+		        LOG << " Flit " << received_flit << " collected from Input[" << i << "][" << vc <<"]" << endl;
 		        power.bufferRouterPush();
 
 		        if (received_flit.src_id == local_id)
@@ -236,6 +147,9 @@ void Router::rxProcess()
 		        
 		        // Track oracle coalescing opportunities (stats only)
 		        trackOracleCoalescing(received_flit);
+		    } else {
+		        // Coalesced path: drop this request (merged with existing)
+		        LOG << " Flit " << received_flit << " COALESCED and DROPPED at Router[" << local_id << "]" << endl;
 		    }
 		    
 		    // CRITICAL: Update buffer status immediately after Push
@@ -298,9 +212,10 @@ void Router::txProcess()
       }
       
       // ========================================================================
-      // PHASE 0: Serve Multicast Engine (separate from reservation table)
+      // PHASE 0: Serve Multicast Engine (decoupled from reservation table)
       // ========================================================================
       serveMcEngine();
+      
  
       // ========================================================================
       // PHASE 1: Drive outputs from registers and handle handshake completion
@@ -358,9 +273,9 @@ void Router::txProcess()
 	{
 	  int i = (start_from_port + j) % (DIRECTIONS + 2);
 
-	  for (int k = 0; k < GlobalParams::n_virtual_channels; k++)
+	  for (int k = 0;k < GlobalParams::n_virtual_channels; k++)
 	  {
-	      int vc = (start_from_vc[i] + k) % GlobalParams::n_virtual_channels;
+	      int vc = (start_from_vc[i]+k)%(GlobalParams::n_virtual_channels);
 	      
 	      if (!buffer[i][vc].IsEmpty()) 
 	      {
@@ -369,12 +284,10 @@ void Router::txProcess()
 
 		  if (flit.flit_type == FLIT_TYPE_HEAD || flit.flit_type == FLIT_TYPE_HEAD_TAIL) 
 		    {
-		      // Normal routing - unicast only (multicast handled by separate engine in Phase 0)
-		      {
-		          // UNICAST: Normal routing and reservation
-		          RouteData route_data;
-		          route_data.current_id = local_id;
-		          route_data.src_id = flit.src_id;
+		      // Normal routing and reservation (multicast handled by engine in Phase 0)
+		      RouteData route_data;
+		      route_data.current_id = local_id;
+		      route_data.src_id = flit.src_id;
 		          route_data.dst_id = flit.dst_id;
 		          route_data.dir_in = i;
 		          route_data.vc_id = flit.vc_id;
@@ -394,21 +307,22 @@ void Router::txProcess()
 		          }
 
 		          TReservation r;
-				  r.input = i;
-				  r.vc = vc;
+		          r.input = i;
+		          r.vc = vc;
 
-				  LOG << " checking availability of Output[" << o << "] for Input[" << i << "][" << vc << "] flit " << flit << endl;
+		          LOG << " checking availability of Output[" << o << "] for Input[" << i << "][" << vc << "] flit " << flit << endl;
 
-				  // DEADLOCK FIX: Check if multicast is using this (output, VC) before trying to reserve
-				  bool mc_blocking = false;
-				  if (GlobalParams::enable_selective_coalescing) {
-				      mc_blocking = mc_vc_busy[o][vc];
-				  }
+		          int rt_status = reservation_table.checkReservation(r, o, false);  // is_multicast=false (unicast)
 
-				  int rt_status = mc_blocking ? RT_OUTVC_BUSY : reservation_table.checkReservation(r, o);		          if (rt_status == RT_AVAILABLE) 
+		          //if (flit.packet_type == PACKET_TYPE_REQUEST && (flit.flit_type == FLIT_TYPE_HEAD || flit.flit_type == FLIT_TYPE_HEAD_TAIL)) {
+		          //    cerr << "Router[" << local_id << "] Phase 2: REQUEST fid=" << flit.feature_id 
+		          //         << " from i=" << i << " vc=" << vc << " trying output " << o << " status=" << rt_status << endl;
+		          //}
+
+		          if (rt_status == RT_AVAILABLE) 
 		          {
 		              LOG << " reserving direction " << o << " for flit " << flit << endl;
-		              reservation_table.reserve(r, o);
+		              reservation_table.reserve(r, o, false);  // is_multicast=false (unicast)
 		          }
 		          else if (rt_status == RT_ALREADY_SAME)
 		          {
@@ -426,12 +340,13 @@ void Router::txProcess()
 		      }
 		    }
 		}
-	  }
-	    start_from_vc[i] = (start_from_vc[i]+1) % GlobalParams::n_virtual_channels;
-	}
+	  }  // End VC loop
+	  start_from_vc[i] = (start_from_vc[i]+1)%GlobalParams::n_virtual_channels;
+	}  // End port loop
 
       start_from_port = (start_from_port + 1) % (DIRECTIONS + 2);
 
+      // ========================================================================
       // ========================================================================
       // PHASE 3: Load output registers from input buffers (after handshakes completed)
       // ========================================================================
@@ -461,19 +376,12 @@ void Router::txProcess()
 	  {
 	      Flit flit = buffer[i][vc].Front();
 	      
-	      // Check if downstream buffer has space
-	      bool output_ready = !buffer_full_status_tx[o].read().mask[vc];
-	      
-	      // CRITICAL: Check if multicast started using this VC (prevent race)
-	      // If multicast set mc_vc_busy in Phase 0 before we checked in Phase 2,
-	      // we must abort to avoid collision
-	      bool mc_using_vc = false;
-	      if (GlobalParams::enable_selective_coalescing) {
-	          mc_using_vc = mc_vc_busy[o][vc];
-	      }
-	      
-	      if (output_ready && !mc_using_vc)
-	      {
+	      // Normal unicast transmission (multicast handled by engine in Phase 0)
+		          // Check if downstream buffer has space
+		          bool output_ready = !buffer_full_status_tx[o].read().mask[vc];
+		          
+		          if (output_ready)
+		          {
 		              // Record path for XY_PATH_REVERSE mode (only for REQUEST HEAD flits)
 		              if (GlobalParams::routing_algorithm == ROUTING_XY_PATH_REVERSE &&
 		                  flit.packet_type == PACKET_TYPE_REQUEST &&
@@ -501,9 +409,10 @@ void Router::txProcess()
 		              // Load flit to output register
 		              LOG << "Loading Output[" << o << "] register from Input[" << i << "][" << vc << "], flit: " << flit << endl;
 		              
-		              // CRITICAL: Set credit_count for RESPONSE packets based on coalesce table
-		              // REMOVED: Multi-credit logic - each response returns exactly 1 credit
-		              // since we now prevent duplicate PE coalescing
+		              if (flit.packet_type == PACKET_TYPE_REQUEST && (flit.flit_type == FLIT_TYPE_HEAD || flit.flit_type == FLIT_TYPE_HEAD_TAIL) && (local_id == 1 || local_id == 2 || local_id == 3 || local_id == 6 || local_id == 7 || local_id == 8)) {
+		                  cerr << "Router[" << local_id << "] Phase 3b: Transmitting REQUEST fid=" << flit.feature_id 
+		                       << " from i=" << i << " vc=" << vc << " to output " << o << endl;
+		              }
 		              
 		              out_reg[o] = flit;
 		              has_flit[o] = true;
@@ -512,7 +421,6 @@ void Router::txProcess()
 		              // Pop from input buffer
 		              buffer[i][vc].Pop();
 		              served_input_i = true;  // Prevent multiple pops from same input
-
 		              
 		              // CRITICAL: Update buffer full status immediately after Pop!
 		              TBufferFullStatus bfs;
@@ -520,20 +428,16 @@ void Router::txProcess()
 		                  bfs.mask[v] = buffer[i][v].IsFull();
 		              buffer_full_status_rx[i].write(bfs);
 
-	              // Release reservation on TAIL
-	              if (flit.flit_type == FLIT_TYPE_TAIL || flit.flit_type == FLIT_TYPE_HEAD_TAIL)
-	              {
-	                  TReservation r;
-	                  r.input = i;
-	                  r.vc = vc;
-	                  reservation_table.release(r, o);
-	                  
-	                  // NOTE: Coalesce entries are ONLY freed by McEngine after all ports done.
-	                  // Phase 3 (unicast path) should NEVER free coalesce entries because
-	                  // all eligible responses go through McEngine (even single-port ones).
-	              }
-	              
-	              // Track routed flits (not locally generated)
+		              // Release reservation on TAIL
+		              if (flit.flit_type == FLIT_TYPE_TAIL || flit.flit_type == FLIT_TYPE_HEAD_TAIL)
+		              {
+		                  TReservation r;
+		                  r.input = i;
+		                  r.vc = vc;
+		                  reservation_table.release(r, o);
+		              }
+		              
+		              // Track routed flits (not locally generated)
 		              if (i != DIRECTION_LOCAL && o != DIRECTION_LOCAL) {
 		                  routed_flits++;
 		              }
@@ -541,10 +445,11 @@ void Router::txProcess()
 		              // Successfully loaded - break to try next input
 		              break;
 		          }
-	      }  // End if buffer not empty
-	  }  // End for loop over all reservations
-	  }  // End if reservations exist
-      } // for loop directions
+		      }
+		  }
+	      }  // End for loop over all reservations
+	  }
+      } // for loop directions (end Phase 3)
 
       if ((int)(sc_time_stamp().to_double() / GlobalParams::clock_period_ps)%2==0)
 	  reservation_table.updateIndex();
@@ -578,11 +483,6 @@ void Router::perCycleUpdate()
 	for (int i = 0; i < DIRECTIONS + 1; i++)
 	    free_slots[i].write(buffer[i][DEFAULT_VC].GetMaxBufferSize());
     } else {
-        // Clean up stale coalesce entries (every cycle check)
-        if (GlobalParams::enable_selective_coalescing) {
-            //cleanupStaleCoalesceEntries();
-        }
-        
         selectionStrategy->perCycleUpdate(this);
 
 	power.leakageRouter();
@@ -735,7 +635,7 @@ vector < int > Router::routingFunction(const RouteData & route_data)
                 	int dest_position = nexthops.size()-1;
                 	int candidate_hop = nexthops[dest_position-i];
 					if ( hasRadioHub(candidate_hop) && !sameRadioHub(local_id,candidate_hop) ) {
-                LOG << "Checking candidate hop " << candidate_hop << " ... It's OK!" << endl;
+						//LOG << "Checking candidate hop " << candidate_hop << " ... It's OK!" << endl;
 						LOG << "Relaying to hub-connected node " << candidate_hop << " to reach destination " << route_data.dst_id << endl;
 						vector<int> dirv;
 						dirv.push_back(DIRECTION_HUB_RELAY+candidate_hop);
@@ -847,16 +747,6 @@ void Router::configure(const int _id,
     coalesce_requests_merged = 0;
     coalesce_table_full_events = 0;
     coalesce_responses_multicast = 0;
-    coalesce_entries_timed_out = 0;
-    multicast_vc_rr_counter = 0;  // No longer used - VCs preserved from incoming traffic
-    
-    // Initialize multicast VC busy tracking
-    for (int port = 0; port < 8; port++) {
-        for (int vc = 0; vc < MAX_VIRTUAL_CHANNELS; vc++) {
-            mc_vc_busy[port][vc] = false;
-        }
-    }
-    
     for (int i = 0; i < COALESCE_TABLE_SIZE; i++) {
         coalesce_table[i].valid = false;
     }
@@ -1055,10 +945,8 @@ int Router::allocateCoalesceEntry(int feature_id)
             coalesce_table[i].valid = true;
             coalesce_table[i].feature_id = feature_id;
             coalesce_table[i].inflight = false;
-            coalesce_table[i].response_started = false;
             coalesce_table[i].requester_ports.reset();
-            coalesce_table[i].requester_pe_counts.clear();
-            coalesce_table[i].allocation_cycle = (uint64_t)(sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
+            coalesce_table[i].requester_pe_ids.clear();
             return i;
         }
     }
@@ -1072,9 +960,8 @@ void Router::freeCoalesceEntry(int entry_idx)
         coalesce_table[entry_idx].valid = false;
         coalesce_table[entry_idx].feature_id = -1;
         coalesce_table[entry_idx].inflight = false;
-        coalesce_table[entry_idx].response_started = false;
         coalesce_table[entry_idx].requester_ports.reset();
-        coalesce_table[entry_idx].requester_pe_counts.clear();
+        coalesce_table[entry_idx].requester_pe_ids.clear();
     }
 }
 
@@ -1084,12 +971,6 @@ bool Router::handleRequestCoalescing(Flit &f, int input_dir)
     // Only coalesce if mechanism is enabled and hint is set
     if (!GlobalParams::enable_selective_coalescing || !f.coalesce_hint) {
         return false;  // Don't drop, forward normally
-    }
-    
-    // CRITICAL: Check coalesce_allowed flag to enforce contiguous prefix
-    // If a previous router disabled coalescing (table full), we must not coalesce here
-    if (!f.coalesce_allowed) {
-        return false;  // Don't drop, forward normally (no coalescing downstream)
     }
     
     // Only process HEAD or HEAD_TAIL flits
@@ -1104,55 +985,27 @@ bool Router::handleRequestCoalescing(Flit &f, int input_dir)
     if (entry_idx >= 0) {
         // Entry exists - this is a duplicate request that arrived from a different port
         CoalesceEntry &entry = coalesce_table[entry_idx];
-
-        // CRITICAL: Check if this PE has already coalesced for this feature
-        // If the same PE sends multiple requests for the same feature, only the FIRST should coalesce
-        // Subsequent requests from the same PE are treated as non-coalesceable (separate requests)
-        if (entry.requester_pe_counts.count(f.src_id) > 0 && entry.requester_pe_counts[f.src_id] > 0) {
-            // This PE already coalesced a request for this feature - DON'T merge again
-            // Disable coalescing for THIS request so it gets its own response
-        uint64_t cur_cycle_merge = (uint64_t)(sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
-       /* if (cur_cycle_merge <= 200000) {
-                cout << "[Router " << local_id << "] COALESCE: PE " << f.src_id 
-                     << " already coalesced for fid=" << f.feature_id 
-                     << " - treating as NEW request (no coalesce)" << "at" << cur_cycle_merge << endl;
-            }*/
-            f.coalesce_allowed = false;  // This request won't coalesce
-            f.multicast_root_id = -1;
-            return false;  // Don't drop, forward normally as separate request
-        }
         
-        // CRITICAL: Check if response has already started multicasting
-        if (entry.response_started) {
-            // Response already in flight - cannot merge this late request
-            // IMPORTANT: Disable coalescing for THIS REQUEST downstream
-            // This ensures its response will NOT multicast (per-request semantics)
-          //  LOG << "Router[" << local_id << "] COALESCE: Late request for feature " << f.feature_id
-            //    << " arrived after response started - disabling coalescing for THIS request" << endl;
-            f.coalesce_allowed = false;  // This request's response must NOT multicast
-            return false;  // DON'T DROP - forward normally
-        }
-        
-        // Response not started yet and PE hasn't coalesced before - safe to merge
-        // Record this input port (multiple requests can come from same port)
+        // Record this input port (no deduplication needed - each port is unique)
         const int NUM_PORTS = DIRECTIONS + 2;
         if (input_dir >= 0 && input_dir < NUM_PORTS) {
             entry.requester_ports.set(input_dir);
-            // Track which PE requested from this port
-            entry.port_to_pe_ids[input_dir].insert(f.src_id);
         }
         
-        // Mark that this PE has coalesced (count = 1 always, since we block duplicates above)
-        entry.requester_pe_counts[f.src_id] = 1;
+        // Record the PE ID that sent this request (for multicast response delivery)
+        if (std::find(entry.requester_pe_ids.begin(), entry.requester_pe_ids.end(), f.src_id) == entry.requester_pe_ids.end()) {
+            entry.requester_pe_ids.push_back(f.src_id);
+        }
         
         coalesce_requests_merged++;
         
-     /*   uint64_t cur_cycle_merge = (uint64_t)(sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
-        if (cur_cycle_merge <= 50000) {
-            cerr << "Router[" << local_id << "] COALESCE MERGE: PE[" << f.src_id 
-                 << "] fid=" << f.feature_id << " from port[" << input_dir 
-                 << "] - Total PEs for this feature: " << entry.requester_pe_counts.size() << endl;
-        }*/
+        //cerr << "Router[" << local_id << "] COALESCE: Merged request from port " 
+        //     << input_dir << ", PE " << f.src_id << " for feature " << f.feature_id 
+        //     << " (entry " << entry_idx << ", total PEs: " << entry.requester_pe_ids.size() << ")" << endl;
+        
+        LOG << "Router[" << local_id << "] COALESCE: Merged request from port " 
+            << input_dir << " for feature " << f.feature_id 
+            << " (entry " << entry_idx << ", ports: " << entry.requester_ports << ")" << endl;
         
         return true;  // DROP this request (it's merged)
     } else {
@@ -1164,310 +1017,33 @@ bool Router::handleRequestCoalescing(Flit &f, int input_dir)
             CoalesceEntry &entry = coalesce_table[entry_idx];
             entry.inflight = true;
             
-            // CRITICAL: This router successfully created a coalescing entry for THIS request
-            // Mark this router as the multicast root (closest to memory so far)
-            // On reverse path, multicast will start at this router
-            f.multicast_root_id = local_id;
-            
             // Record this input port
             const int NUM_PORTS = DIRECTIONS + 2;
             if (input_dir >= 0 && input_dir < NUM_PORTS) {
                 entry.requester_ports.set(input_dir);
-                // Track which PE requested from this port
-                entry.port_to_pe_ids[input_dir].insert(f.src_id);
             }
             
-            // Record the PE ID with initial count of 1
-            entry.requester_pe_counts[f.src_id] = 1;
+            // Record the PE ID that sent this request
+            entry.requester_pe_ids.push_back(f.src_id);
             
-         /*   uint64_t cur_cycle_new = (uint64_t)(sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
-            if (cur_cycle_new <= 50000) {
-                cerr << "Router[" << local_id << "] COALESCE NEW: PE[" << f.src_id 
-                     << "] fid=" << f.feature_id << " from port[" << input_dir 
-                     << "] - First request, allocated entry " << entry_idx << endl;
-            }*/
+            //cerr << "Router[" << local_id << "] COALESCE: Allocated entry " << entry_idx 
+            //     << " for feature " << f.feature_id << " from port " << input_dir 
+            //     << ", PE " << f.src_id << " - initialized multicast_dests" << endl;
+            
+            LOG << "Router[" << local_id << "] COALESCE: Allocated entry " << entry_idx 
+                << " for feature " << f.feature_id << " from port " << input_dir << endl;
             
             return false;  // Forward this request normally
         } else {
-            // CRITICAL: Table full - STOP coalescing for this feature on all downstream routers
-            // Set coalesce_allowed = false to enforce contiguous prefix property
+            // Table full - can't coalesce
             coalesce_table_full_events++;
             
-            LOG << "Router[" << local_id << "] COALESCE: Table full for feature " 
-                << f.feature_id << " - disabling coalescing for downstream routers" << endl;
+            LOG << "Router[" << local_id << "] COALESCE: Table full, can't coalesce feature " 
+                << f.feature_id << endl;
             
-            f.coalesce_allowed = false;  // Prevent any downstream router from coalescing this feature
-            
-            return false;  // Forward normally (no coalescing here or downstream)
+            return false;  // Forward normally
         }
     }
-}
-
-// ============================================================================
-// MULTICAST ENGINE IMPLEMENTATION (Phase 0)
-// ============================================================================
-
-void Router::serveMcEngine()
-{
-    // Serve multicast engine entries - send flits gradually to multiple outputs
-    // Each port progresses independently through the FIFO
-    // CRITICAL FIX: Multicast now uses reservation table to prevent deadlock
-    for (int mc_idx = 0; mc_idx < MC_ENGINE_SIZE; mc_idx++) {
-        McEntry &mc = mc_engine[mc_idx];
-        
-        if (!mc.valid) {
-            continue;  // Entry not active
-        }
-        
-        if (mc.fifo.empty()) {
-            cerr << "Router[" << local_id << "] ERROR: McEngine[" << mc_idx << "] valid but FIFO empty for fid=" << mc.feature_id << endl;
-            continue;
-        }
-        
-        // PHASE A: Check if unicast is using VCs we need (multicast bypasses reservation table)
-        for (int o = 0; o < DIRECTIONS + 2; o++) {
-            if (!mc.port[o].needed || mc.port[o].done || mc.port[o].head_sent) {
-                continue;  // Skip if not needed, done, or HEAD already sent
-            }
-            
-            // Check if we're at the HEAD flit for this output
-            int idx = mc.port[o].next_flit_idx;
-            if (idx >= (int)mc.fifo.size()) {
-                continue;
-            }
-            
-            Flit f = mc.fifo[idx];
-            if (f.flit_type != FLIT_TYPE_HEAD) {
-                continue;  // Not at HEAD yet for this output
-            }
-            
-            // Check if unicast OR another multicast has reserved this (output, VC)
-            // If anyone is using it, we must wait
-            bool vc_in_use = false;
-            
-            // Check 1: Is another multicast already using this (o, vc)?
-            if (mc_vc_busy[o][mc.port[o].vc]) {
-                vc_in_use = true;
-            }
-            
-            // Check 2: Has unicast reserved this (o, vc)?
-            if (!vc_in_use) {
-                for (int check_input = 0; check_input < DIRECTIONS + 2; check_input++) {
-                    vector<pair<int,int>> reservations = reservation_table.getReservations(check_input);
-                    for (auto res : reservations) {
-                        if (res.first == o && res.second == mc.port[o].vc) {
-                            vc_in_use = true;
-                            break;
-                        }
-                    }
-                    if (vc_in_use) break;
-                }
-            }
-            
-            // Can only proceed if VC is free for both unicast and multicast
-            mc.port[o].reserved = !vc_in_use;
-        }
-        
-        // PHASE B: Try to send flits for each output
-        for (int o = 0; o < DIRECTIONS + 2; o++) {
-            if (!mc.port[o].needed || mc.port[o].done) {
-                continue;  // This output doesn't need packet or already done
-            }
-            
-            int idx = mc.port[o].next_flit_idx;
-            if (idx >= (int)mc.fifo.size()) {
-                continue;  // This port is caught up with the FIFO
-            }
-            
-            Flit f = mc.fifo[idx];
-            bool is_head = (f.flit_type == FLIT_TYPE_HEAD);
-            bool is_tail = (f.flit_type == FLIT_TYPE_TAIL);
-            
-            // HEAD flit: must have reservation
-            if (is_head && !mc.port[o].reserved) {
-                continue;  // Cannot send HEAD without reservation
-            }
-            
-            // Wormhole rule: can't send BODY/TAIL before HEAD
-            if (!is_head && !mc.port[o].head_sent) {
-                continue;
-            }
-            
-            // Check if we can send this flit to this output
-            if (has_flit[o]) {
-                continue;  // Output register occupied - try next cycle
-            }
-            
-            if (buffer_full_status_tx[o].read().mask[mc.port[o].vc]) {
-                continue;  // Downstream buffer full - try next cycle
-            }
-            
-            // CRITICAL: Re-check reservation status before sending (prevent race)
-            // Check both unicast and multicast to prevent conflicts
-            if (is_head || !mc.port[o].head_sent) {
-                bool vc_now_in_use = false;
-                
-                // Check 1: Did another multicast claim this VC between Phase A and B?
-                if (mc_vc_busy[o][mc.port[o].vc]) {
-                    vc_now_in_use = true;
-                }
-                
-                // Check 2: Did unicast reserve this VC between Phase A and B?
-                if (!vc_now_in_use) {
-                    for (int check_input = 0; check_input < DIRECTIONS + 2; check_input++) {
-                        vector<pair<int,int>> reservations = reservation_table.getReservations(check_input);
-                        for (auto res : reservations) {
-                            if (res.first == o && res.second == mc.port[o].vc) {
-                                vc_now_in_use = true;
-                                break;
-                            }
-                        }
-                        if (vc_now_in_use) break;
-                    }
-                }
-                
-                if (vc_now_in_use) {
-                    // VC became busy between Phase A and Phase B - abort this output
-                    mc.port[o].reserved = false;
-                    continue;
-                }
-            }
-            
-            // Ready to send! Load output register
-            f.vc_id = mc.port[o].vc;
-            
-            // REMOVED: Multi-credit logic - each response returns exactly 1 credit
-            // since we now prevent duplicate PE coalescing
-            
-            out_reg[o] = f;
-            has_flit[o] = true;
-            mc.port[o].next_flit_idx++;
-            
-            // Update state
-            if (is_head) {
-                mc.port[o].head_sent = true;
-                // Mark this VC as busy on this output port (for HEAD flit)
-                // This prevents unicast from trying to reserve it
-                mc_vc_busy[o][mc.port[o].vc] = true;
-            }
-            if (is_tail) {
-                mc.port[o].done = true;
-                // Free this VC on this output port (for TAIL flit)
-                // This allows unicast to reserve it again
-                mc_vc_busy[o][mc.port[o].vc] = false;
-            }
-        }
-        
-        // Check if all needed ports are done
-        bool all_done = true;
-        for (int o = 0; o < DIRECTIONS + 2; o++) {
-            if (mc.port[o].needed && !mc.port[o].done) {
-                all_done = false;
-                break;
-            }
-        }
-        
-        // If all ports done, free the entry
-        if (all_done) {
-              //  cerr << "Router[" << local_id << "] McEngine[" << mc_idx << "] ALL OUTPUTS DONE - freeing entry for fid=" << mc.feature_id << endl;
-            
-            // Free coalescing entry
-            int ce_idx = findCoalesceEntry(mc.feature_id);
-            if (ce_idx >= 0) {
-                freeCoalesceEntry(ce_idx);
-            }
-            
-            // Free McEntry
-            freeMcEntry(mc_idx);
-            
-            // Track statistics
-            coalesce_responses_multicast++;
-        }
-    }
-}
-
-void Router::printStuckMcEntries()
-{
-    if (!GlobalParams::enable_selective_coalescing) return;
-    
-    for (int i = 0; i < MC_ENGINE_SIZE; i++) {
-        if (mc_engine[i].valid) {
-            McEntry &mc = mc_engine[i];
-            cerr << "Router[" << local_id << "] STUCK McEntry[" << i << "] fid=" << mc.feature_id 
-                 << " FIFO=" << mc.fifo.size() << " ports: ";
-            for (int o = 0; o < DIRECTIONS + 2; o++) {
-                if (mc.port[o].needed) {
-                    cerr << o << (mc.port[o].done ? "(done)" : "(STUCK)") << " ";
-                }
-            }
-            cerr << endl;
-        }
-    }
-    
-    // Also check for stuck flits in regular buffers
-    int total_buffered = 0;
-    for (int i = 0; i < DIRECTIONS + 2; i++) {
-        for (int vc = 0; vc < GlobalParams::n_virtual_channels; vc++) {
-            int size = buffer[i][vc].Size();
-            if (size > 0) {
-                total_buffered += size;
-            }
-        }
-    }
-    if (total_buffered > 0) {
-        cerr << "Router[" << local_id << "] Total buffered flits: " << total_buffered << endl;
-    }
-}
-
-int Router::allocateMcEntry(int feature_id)
-{
-    for (int i = 0; i < MC_ENGINE_SIZE; i++) {
-        if (!mc_engine[i].valid) {
-            mc_engine[i].valid = true;
-            mc_engine[i].feature_id = feature_id;
-            mc_engine[i].src_memtile = -1;
-            mc_engine[i].out_ports_needed.reset();
-            mc_engine[i].fifo.clear();
-            for (int o = 0; o < DIRECTIONS + 2; o++) {
-                mc_engine[i].port[o].needed = false;
-                mc_engine[i].port[o].head_sent = false;
-                mc_engine[i].port[o].done = false;
-                mc_engine[i].port[o].reserved = false;
-                mc_engine[i].port[o].next_flit_idx = 0;
-                mc_engine[i].port[o].vc = 0;  // Default (will be overwritten with preserved VC)
-            }
-            return i;
-        }
-    }
-    return -1;  // Table full
-}
-
-void Router::freeMcEntry(int mc_idx)
-{
-    if (mc_idx >= 0 && mc_idx < MC_ENGINE_SIZE) {
-        mc_engine[mc_idx].valid = false;
-        mc_engine[mc_idx].feature_id = -1;
-        mc_engine[mc_idx].fifo.clear();
-        
-        // Remove from input tracking map
-        for (auto it = input_to_mc_entry.begin(); it != input_to_mc_entry.end(); ) {
-            if (it->second == mc_idx) {
-                it = input_to_mc_entry.erase(it);
-            } else {
-                ++it;
-            }
-        }
-    }
-}
-
-int Router::findMcEntry(int feature_id)
-{
-    for (int i = 0; i < MC_ENGINE_SIZE; i++) {
-        if (mc_engine[i].valid && mc_engine[i].feature_id == feature_id) {
-            return i;
-        }
-    }
-    return -1;
 }
 
 // Get list of output directions where this response should be multicast
@@ -1486,60 +1062,58 @@ std::vector<int> Router::getMulticastOutputs(const Flit &f)
         return outputs;
     }
     
-    // CRITICAL: Per-request multicast permission
-    // This response may only multicast if the original request had coalesce_allowed=true at memory
-    // Prevents responses for "late" or "table-full" requests from incorrectly multicasting
-    if (!f.multicast_allowed) {
-        // This specific response must NOT multicast, even if coalesce entries exist
-        return outputs;  // Empty = unicast via recorded_path
-    }
-    
-    // CRITICAL: Contiguous prefix semantics
-    // - Routers WITHOUT a coalesce entry: forward as unicast (using recorded_path)
-    // - Routers WITH a coalesce entry: multicast to all requester ports
-    // This ensures responses are unicast through non-coalescing region, then branch at first coalescing router
-    
+    // Find coalescing entry for this feature
     int entry_idx = findCoalesceEntry(f.feature_id);
     
-    if (entry_idx < 0) {
-        // No coalesce entry at this router - forward as UNICAST using recorded_path
-        // This handles the "before first coalescing router" region
-        return outputs;  // Empty = unicast routing
-    }
-    
-    // Found coalesce entry - MULTICAST to all ports where requests came from
-    CoalesceEntry &entry = coalesce_table[entry_idx];
-    
-    // Send response back through the ports where requests came FROM
-    // requester_ports contains the INPUT ports that had requests
-    // Response goes back OUT through those same ports (reverse direction)
-    const int NUM_PORTS = DIRECTIONS + 2;
-    
-    // Debug: Show detailed PE-to-port mapping
-    uint64_t cur_cycle = (uint64_t)(sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
-   /* if (cur_cycle <= 50000) {
-        int total_pes = 0;
-        cerr << "Router[" << local_id << "] MULTICAST fid=" << f.feature_id << " mapping:" << endl;
-        for (int port = 0; port < NUM_PORTS; port++) {
-            if (entry.requester_ports.test(port)) {
-                cerr << "  Port[" << port << "] -> PEs: ";
-                if (entry.port_to_pe_ids.count(port) > 0) {
-                    for (int pe_id : entry.port_to_pe_ids[port]) {
-                        cerr << pe_id << " ";
-                        total_pes++;
-                    }
-                }
-                cerr << endl;
+    // If no coalesce entry, check if flit has multicast_dests populated (from upstream router)
+    if (entry_idx < 0 && !f.multicast_dests.empty()) {
+        // This is a multicast response coming from upstream router
+        // multicast_dests contains list of PE IDs that need this response
+        //cerr << "Router[" << local_id << "] getMulticastOutputs: Using multicast_dests for feature " << f.feature_id 
+        //     << " (" << f.multicast_dests.size() << " destination PEs)" << endl;
+        
+        // Check recorded_path to determine which ports had requests from this feature
+        // recorded_path shows route REQUEST took TO memory, reverse it for RESPONSE
+        // Each router in path needs to multicast to ports where requests came from
+        
+        // Check if local PE is in multicast_dests
+        for (int dest_pe : f.multicast_dests) {
+            if (dest_pe == local_id) {
+                outputs.push_back(DIRECTION_LOCAL);
+                //cerr << "Router[" << local_id << "] Multicast destination matches LOCAL PE" << endl;
+                break;  // Only one local port
             }
         }
-        cerr << "  Total unique PEs expecting response: " << total_pes << endl;
-    }*/
+        
+        // For intermediate routers: check recorded_path to see if we're on the route
+        // If this router IS in recorded_path, we may need to multicast to multiple branches
+        // BUT: XY_PATH_REVERSE means responses follow EXACT reverse path, no branching!
+        // Multicast ONLY happens at the router where coalescing occurred (has coalesce entry)
+        // Downstream routers just route normally (unicast)
+        
+        // If we found LOCAL port, deliver locally. Otherwise route normally (unicast)
+        return outputs;
+    }
     
+    if (entry_idx < 0) {
+        //cerr << "Router[" << local_id << "] getMulticastOutputs: NO ENTRY for feature " << f.feature_id 
+        //     << " (RESPONSE from MemTile " << f.src_id << ") - unicast only" << endl;
+        return outputs;  // No coalescing entry at this router, unicast normally
+    }
+    
+    CoalesceEntry &entry = coalesce_table[entry_idx];
+    
+    // If entry exists, send response to ALL recorded ports (even if just 1)
+    // This overrides normal routing - response MUST go back through ports where requests came from
+    const int NUM_PORTS = DIRECTIONS + 2;  // Never hardcode port counts!
     for (int port = 0; port < NUM_PORTS; port++) {
         if (entry.requester_ports.test(port)) {
             outputs.push_back(port);
         }
     }
+    
+    //cerr << "Router[" << local_id << "] getMulticastOutputs: FOUND entry for feature " << f.feature_id 
+    //     << " - multicast to " << outputs.size() << " ports" << endl;
     
     // NOTE: Multicast statistics are tracked in Phase 3 when actually transmitting
     // NOTE: Do NOT free entry here - this function is called every cycle while HEAD waits
@@ -1563,7 +1137,7 @@ void Router::trackOracleCoalescing(const Flit &f)
     // NOTE: Multicast handling is now done in txProcess via getMulticastOutputs()
     if (f.packet_type == PACKET_TYPE_RESPONSE) {
         
-        if (f.flit_type == FLIT_TYPE_TAIL ) {
+        if (f.flit_type == FLIT_TYPE_TAIL || f.flit_type == FLIT_TYPE_HEAD_TAIL) {
             auto it = oracle_inflight.find(key);
             if (it != oracle_inflight.end()) {
                 // Check if this response is for the CURRENT batch or a PREVIOUS batch
@@ -1716,32 +1290,6 @@ void Router::printOracleCoalescingStats() const
     }
 }
 
-// Clean up coalesce table entries that have been stuck for more than 600 cycles
-void Router::cleanupStaleCoalesceEntries()
-{
-    uint64_t cur_cycle = (uint64_t)(sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
-    const uint64_t TIMEOUT_CYCLES = 2000;
-    
-    for (int i = 0; i < COALESCE_TABLE_SIZE; i++) {
-        if (!coalesce_table[i].valid) {
-            continue;
-        }
-        
-        uint64_t age = cur_cycle - coalesce_table[i].allocation_cycle;
-        
-        if (age > TIMEOUT_CYCLES) {
-            // Entry has been sitting for more than 600 cycles without a response
-            // This likely means the request was dropped or response was lost
-            /*cerr << "*** Router[" << local_id << "] COALESCE TIMEOUT: Freeing stale entry " << i
-                 << " for fid=" << coalesce_table[i].feature_id
-                 << " age=" << age << " cycles" << endl;*/
-            
-            freeCoalesceEntry(i);
-            coalesce_entries_timed_out++;
-        }
-    }
-}
-
 // Print selective coalescing statistics
 void Router::printSelectiveCoalescingStats() const
 {
@@ -1754,7 +1302,6 @@ void Router::printSelectiveCoalescingStats() const
     cout << "  Requests merged (dropped):   " << coalesce_requests_merged << endl;
     cout << "  Table full events:           " << coalesce_table_full_events << endl;
     cout << "  Responses multicast:         " << coalesce_responses_multicast << endl;
-    cout << "  Entries timed out (>600cyc): " << coalesce_entries_timed_out << endl;
     
     if (coalesce_requests_received > 0) {
         double merge_ratio = 100.0 * coalesce_requests_merged / coalesce_requests_received;
@@ -1771,4 +1318,126 @@ void Router::printSelectiveCoalescingStats() const
     }
     cout << "  Active table entries:        " << active_entries << " / " 
          << COALESCE_TABLE_SIZE << endl;
+}
+
+// ========================================================================
+// MULTICAST ENGINE IMPLEMENTATION
+// ========================================================================
+
+int Router::allocateMcEntry(int feature_id)
+{
+    for (int i = 0; i < MC_ENGINE_SIZE; i++) {
+        if (!mc_engine[i].valid) {
+            mc_engine[i].valid = true;
+            mc_engine[i].feature_id = feature_id;
+            mc_engine[i].fifo.clear();
+            mc_engine[i].out_ports_needed.reset();
+            for (int p = 0; p < DIRECTIONS + 2; p++) {
+                mc_engine[i].port[p].needed = false;
+                mc_engine[i].port[p].head_sent = false;
+                mc_engine[i].port[p].done = false;
+                mc_engine[i].port[p].vc = 4 + (p % 4);  // Deterministic VC assignment
+            }
+            return i;
+        }
+    }
+    return -1;  // Engine full
+}
+
+void Router::freeMcEntry(int mc_idx)
+{
+    if (mc_idx >= 0 && mc_idx < MC_ENGINE_SIZE) {
+        mc_engine[mc_idx].valid = false;
+        mc_engine[mc_idx].fifo.clear();
+    }
+}
+
+int Router::findMcEntry(int feature_id)
+{
+    for (int i = 0; i < MC_ENGINE_SIZE; i++) {
+        if (mc_engine[i].valid && mc_engine[i].feature_id == feature_id) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void Router::serveMcEngine()
+{
+    // Phase 0: Serve multicast engine entries
+    for (int mc_idx = 0; mc_idx < MC_ENGINE_SIZE; mc_idx++) {
+        McEntry &entry = mc_engine[mc_idx];
+        if (!entry.valid || entry.fifo.empty()) continue;
+        
+        Flit &next_flit = entry.fifo.front();
+        
+        // Try to send this flit to all needed outputs
+        bool all_sent = true;
+        for (int o = 0; o < DIRECTIONS + 2; o++) {
+            if (!entry.port[o].needed || entry.port[o].done) continue;
+            
+            // Enforce wormhole: can't send BODY/TAIL before HEAD
+            if ((next_flit.flit_type == FLIT_TYPE_BODY || next_flit.flit_type == FLIT_TYPE_TAIL) &&
+                !entry.port[o].head_sent) {
+                all_sent = false;
+                continue;
+            }
+            
+            // Check if output register is free
+            if (has_flit[o]) {
+                all_sent = false;
+                continue;
+            }
+            
+            // Check downstream buffer space
+            if (buffer_full_status_tx[o].read().mask[entry.port[o].vc]) {
+                all_sent = false;
+                continue;
+            }
+            
+            // Ready to send!
+            Flit mc_copy = next_flit;
+            mc_copy.vc_id = entry.port[o].vc;
+            
+            // Load into output register
+            out_reg[o] = mc_copy;
+            has_flit[o] = true;
+            port_tx_busy[o]++;
+            
+            // Update port state
+            if (next_flit.flit_type == FLIT_TYPE_HEAD || next_flit.flit_type == FLIT_TYPE_HEAD_TAIL) {
+                entry.port[o].head_sent = true;
+                coalesce_responses_multicast++;  // Count HEAD
+            }
+            if (next_flit.flit_type == FLIT_TYPE_TAIL || next_flit.flit_type == FLIT_TYPE_HEAD_TAIL) {
+                entry.port[o].done = true;
+            }
+            
+            coalesce_multicast_flits_sent++;
+        }
+        
+        // Pop flit from engine FIFO once all needed outputs received it
+        if (all_sent) {
+            entry.fifo.erase(entry.fifo.begin());
+            
+            // Check if entire multicast is complete
+            bool all_done = true;
+            for (int o = 0; o < DIRECTIONS + 2; o++) {
+                if (entry.port[o].needed && !entry.port[o].done) {
+                    all_done = false;
+                    break;
+                }
+            }
+            
+            if (all_done) {
+                // Free coalesce entry and MC entry
+                int coalesce_idx = findCoalesceEntry(entry.feature_id);
+                if (coalesce_idx >= 0) {
+                    freeCoalesceEntry(coalesce_idx);
+                }
+                freeMcEntry(mc_idx);
+            }
+        }
+    }
+}
 }

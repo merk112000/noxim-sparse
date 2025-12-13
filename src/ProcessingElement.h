@@ -30,6 +30,9 @@ struct TraceEvent {
     int src;
     int dst;
     int feature_id;
+    bool coalesce_hint;  // Hint from trace: eligible for selective coalescing
+    
+    TraceEvent() : cycle(0), src(-1), dst(-1), feature_id(-1), coalesce_hint(false) {}
 };
 
 SC_MODULE(ProcessingElement)
@@ -67,6 +70,7 @@ SC_MODULE(ProcessingElement)
     uint64_t last_heartbeat_cycle;
     uint64_t total_requests_injected;
     uint64_t total_responses_injected;
+    uint64_t total_responses_received;  // Number of RESPONSE packets received (HEAD count)
 
     // End-to-end latency tracking (REQUEST injection to RESPONSE arrival)
     map<int, uint64_t> request_injection_time;  // feature_id -> injection cycle (packet creation)
@@ -109,8 +113,7 @@ SC_MODULE(ProcessingElement)
     vector<TraceEvent> trace_events;	// Loaded trace events for this PE
     size_t next_event_idx;		// Index of next event to inject
     uint64_t last_injection_cycle;	// Last cycle when we injected a request (for spacing)
-    int next_vc_request;		// Round-robin VC counter for REQUEST packets
-    int next_vc_response;		// Round-robin VC counter for RESPONSE packets
+    // REMOVED: next_vc_request, next_vc_response - now using randInt(0, n_virtual_channels-1) for all traffic
     void loadTraceFile();		// Load trace file for this PE
     bool canShotTrace(Packet & packet);	// Trace-driven packet generation
     bool isMemoryTile(int id);		// Check if a tile ID is a memory controller
@@ -128,6 +131,17 @@ SC_MODULE(ProcessingElement)
     bool hasCredit(int mem_tile_id);	  // Check if credits available
     void consumeCredit(int mem_tile_id);  // Consume 1 credit when sending REQUEST
     void returnCredit(int src_mem_tile);  // Return 1 credit when receiving RESPONSE
+    
+    // Debug tracking for missing responses
+    struct OutstandingRequest {
+        uint64_t injection_cycle;
+        int dst_mem_tile;
+        int feature_id;
+    };
+    std::map<int, OutstandingRequest> outstanding_requests;  // feature_id -> request info
+    std::map<int, int> timeout_counts_per_feature;  // feature_id -> number of timeouts
+    void checkMissingResponses();  // Check for requests that haven't received responses
+    void printTimeoutStats() const;  // Print timeout statistics per feature
 
     void fixRanges(const Coord, Coord &);	// Fix the ranges of the destination
     int randInt(int min, int max);	// Extracts a random integer number between min and max
@@ -154,8 +168,7 @@ SC_MODULE(ProcessingElement)
 
 	next_event_idx = 0;
 	last_injection_cycle = 0;
-	next_vc_request = 0;
-	next_vc_response = 0;
+	// REMOVED: next_vc_request, next_vc_response initialization
 	last_heartbeat_cycle = 0;
 	total_requests_injected = 0;
 	total_responses_injected = 0;

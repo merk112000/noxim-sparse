@@ -59,6 +59,8 @@ HubConfig GlobalParams::default_hub_configuration;
 map<int, HubConfig> GlobalParams::hub_configuration;
 map<int, int> GlobalParams::hub_for_tile;
 PowerConfig GlobalParams::power_configuration;
+// Selective in-router coalescing
+bool GlobalParams::enable_selective_coalescing;
 // out of yaml configuration
 bool GlobalParams::ascii_monitor;
 int GlobalParams::channel_selection;

@@ -33,7 +33,7 @@ using namespace std;
 #define DIRECTION_HUB_RELAY     5000
 #define DIRECTION_WIRELESS    747
 
-#define MAX_VIRTUAL_CHANNELS	8
+#define MAX_VIRTUAL_CHANNELS	16
 #define DEFAULT_VC 		0
 
 #define RT_AVAILABLE 1
@@ -58,6 +58,10 @@ using namespace std;
 #define ROUTING_DYAD           "DYAD"
 #define ROUTING_TABLE_BASED    "TABLE_BASED"
 #define ROUTING_XY_PATH_REVERSE "XY_PATH_REVERSE"
+
+// Selective coalescing
+#define MAX_TILES 25  // Maximum number of tiles in the system
+#define COALESCE_TABLE_SIZE 1024  // Number of coalescing entries per router
 
 
 // Channel selection 
@@ -187,6 +191,8 @@ struct GlobalParams {
     static map<int, HubConfig> hub_configuration;
     static map<int, int> hub_for_tile;
     static PowerConfig power_configuration;
+    // Selective in-router coalescing
+    static bool enable_selective_coalescing;  // Enable/disable coalescing mechanism from YAML
     // out of yaml configuration
     static bool ascii_monitor;
     static int channel_selection;

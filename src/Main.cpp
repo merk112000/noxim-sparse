@@ -139,6 +139,16 @@ int sc_main(int arg_num, char *arg_vet[])
     cout << "Noxim simulation completed.";
     cout << " (" << sc_time_stamp().to_double() / GlobalParams::clock_period_ps << " cycles executed)" << endl;
     cout << endl;
+    
+    // DEBUG: Print stuck McEngine entries before showing stats
+    cerr << "\n=== Checking for stuck McEngine entries ===" << endl;
+    for (int y = 0; y < GlobalParams::mesh_dim_y; y++) {
+        for (int x = 0; x < GlobalParams::mesh_dim_x; x++) {
+            n->t[x][y]->r->printStuckMcEntries();
+        }
+    }
+    cerr << "===========================================\n" << endl;
+    
 //assert(false);
     // Show statistics
     GlobalStats gs(n);
@@ -168,6 +178,14 @@ int sc_main(int arg_num, char *arg_vet[])
         }
     }
     
+    // Show timeout statistics for compute PEs (credits returned for missing responses)
+    cout << endl << "Timeout Statistics (Missing Responses - Credits Returned):" << endl;
+    for (int y = 0; y < GlobalParams::mesh_dim_y; y++) {
+        for (int x = 0; x < GlobalParams::mesh_dim_x; x++) {
+            n->t[x][y]->pe->printTimeoutStats();
+        }
+    }
+    
     // Show router link utilization for memory tile routers
     cout << endl << "Memory Tile Router Link Utilization:" << endl;
     vector<int> memory_tile_ids = {1, 2, 3, 5, 9, 10, 14, 15, 19, 21, 22, 23};
@@ -193,8 +211,21 @@ int sc_main(int arg_num, char *arg_vet[])
         }
     }
     
+    // Show selective coalescing statistics (if enabled)
+    if (GlobalParams::enable_selective_coalescing) {
+        cout << endl << "===========================================================" << endl;
+        cout << "Selective In-Router Coalescing Statistics" << endl;
+        cout << "===========================================================" << endl;
+        for (int y = 0; y < GlobalParams::mesh_dim_y; y++) {
+            for (int x = 0; x < GlobalParams::mesh_dim_x; x++) {
+                n->t[x][y]->r->printSelectiveCoalescingStats();
+                cout << endl;
+            }
+        }
+    }
+    
     // Show oracle coalescing statistics for all routers
-    cout << endl << "===========================================================" << endl;
+  /*  cout << endl << "===========================================================" << endl;
     cout << "Oracle Coalescing Statistics (Request Deduplication Potential)" << endl;
     cout << "===========================================================" << endl;
     for (int y = 0; y < GlobalParams::mesh_dim_y; y++) {
@@ -202,7 +233,7 @@ int sc_main(int arg_num, char *arg_vet[])
             n->t[x][y]->r->printOracleCoalescingStats();
             cout << endl;
         }
-    }
+    }*/
 
 
     if ((GlobalParams::max_volume_to_be_drained > 0) &&

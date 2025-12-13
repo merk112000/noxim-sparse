@@ -58,14 +58,21 @@ struct Packet {
     int feature_id;		// Feature ID for trace-based traffic
     PacketType packet_type;	// REQUEST or RESPONSE
     vector<int> recorded_path;  // Path recording for reverse routing (XY_PATH_REVERSE mode)
+    bool coalesce_hint;  // Hint for selective coalescing (from trace)
+    bool multicast_allowed;  // Per-request multicast permission (copied from request's coalesce_allowed)
+    int multicast_root_id;   // Router ID where multicast should start on reverse path
+    vector<int> multicast_dests; // For multicast responses - all destination PE IDs that requested this feature
 
     // Constructors
     Packet() { 
         feature_id = -1; 
         packet_type = PACKET_TYPE_REQUEST;  // Default to REQUEST
+        coalesce_hint = false;
+        multicast_allowed = false;
+        multicast_root_id = -1;
     }
 
-    Packet(const int s, const int d, const int vc, const double ts, const int sz) {
+    inline Packet(const int s, const int d, const int vc, const double ts, const int sz) {
 	make(s, d, vc, ts, sz);
     }
 
@@ -94,6 +101,7 @@ struct RouteData {
     int vc_id;
     PacketType packet_type; // Packet type for routing decisions
     vector<int> recorded_path;  // Recorded path for reverse routing
+    vector<int> multicast_dests; // For multicast responses - all destination PE IDs
     
     RouteData() : current_id(-1), src_id(-1), dst_id(-1), dir_in(-1), vc_id(-1), 
                   packet_type(PACKET_TYPE_REQUEST) {}
@@ -159,6 +167,26 @@ struct Flit {
     
     // Path recording for reverse routing (XY_PATH_REVERSE mode)
     vector<int> recorded_path;  // Sequence of router IDs traversed by the request
+    
+    // Selective in-router coalescing mechanism
+    bool coalesce_hint;  // True if this request is eligible for coalescing (from trace)
+    bool coalesce_allowed;  // True if downstream routers are allowed to coalesce THIS REQUEST
+                            // Set to false when a router's coalesce table is full to prevent
+                            // "holes" in the coalescing region (contiguous prefix enforcement)
+    bool multicast_allowed; // True if THIS RESPONSE is allowed to multicast
+                            // Copied from request's coalesce_allowed at memory tile
+                            // Ensures per-request multicast decisions (not per-feature)
+    int multicast_root_id;  // Router ID of closest-to-memory router that coalesced THIS REQUEST
+                            // -1 if no router coalesced. Used to determine where multicast starts on reverse path.
+                            // Fixes "old vs new request" bug by ensuring each response only multicasts
+                            // at the router that actually coalesced its specific request.
+    int forced_output_port; // For single-port coalesce responses: which output port to use
+                            // Set to -1 for normal routing, or specific port (0-7) for forced route
+    int original_src_id; // Original PE that generated this request (for multicast tracking)
+    int credit_count;    // Number of credits to return (for coalesced duplicate requests from same PE)
+    
+    // Multicast response support: ALL destination PE IDs for this response
+    vector<int> multicast_dests;  // List of PE IDs that should receive this response
     
     // Oracle coalescing instrumentation (stats only, no functional impact)
     bool oracle_coalesce_marked;  // True if this flow was already coalesced at an upstream router

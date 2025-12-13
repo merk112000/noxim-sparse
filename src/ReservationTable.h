@@ -42,10 +42,10 @@ class ReservationTable {
     inline string name() const {return "ReservationTable";};
 
     // check if the input/vc/output is a
-    int checkReservation(const TReservation r, const int port_out);
+    int checkReservation(const TReservation r, const int port_out, bool is_multicast = false);
 
     // Connects port_in with port_out. Asserts if port_out is reserved
-    void reserve(const TReservation r, const int port_out);
+    void reserve(const TReservation r, const int port_out, bool is_multicast = false);
 
     // Releases port_out connection. 
     // Asserts if port_out is not reserved or not valid

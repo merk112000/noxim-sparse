@@ -94,6 +94,7 @@ void loadConfiguration() {
     GlobalParams::use_winoc = readParam<bool>(config, "use_winoc");
     GlobalParams::winoc_dst_hops = readParam<int>(config, "winoc_dst_hops",0);
     GlobalParams::use_powermanager = readParam<bool>(config, "use_wirxsleep");
+    GlobalParams::enable_selective_coalescing = readParam<bool>(config, "enable_selective_coalescing", false);
     
 
     set<int> channelSet;

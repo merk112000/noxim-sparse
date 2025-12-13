@@ -11,22 +11,31 @@ using namespace std;
 
 // Pending memory request structure
 struct MemoryRequest {
-    int original_src_id;     // Original PE that sent the REQUEST
+    int original_src_id;     // Original PE that sent the REQUEST (first requester)
     int feature_id;          // Feature ID or address
     uint64_t arrival_cycle;  // Cycle when REQUEST head arrived at memory tile
     uint64_t start_cycle;    // Cycle when RESPONSE will start injecting
     vector<int> recorded_path;  // Path recorded by the REQUEST (for reverse routing)
+    bool coalesce_hint;      // Whether this request had coalesce hint set
+    bool coalesce_allowed;   // Whether THIS REQUEST was allowed to coalesce (per-request)
+                             // Used to set multicast_allowed in the response
+    vector<int> multicast_dests;  // All PE IDs that requested this feature (for multicast response)
+    int multicast_root_id;   // Router ID of closest-to-memory router that coalesced THIS REQUEST
     
     MemoryRequest() : original_src_id(-1), feature_id(-1), 
-                      arrival_cycle(0), start_cycle(0) {}
+                      arrival_cycle(0), start_cycle(0), coalesce_hint(false), coalesce_allowed(false), multicast_root_id(-1) {}
     
-    MemoryRequest(int src, int fid, uint64_t arr, uint64_t start)
+    MemoryRequest(int src, int fid, uint64_t arr, uint64_t start, bool hint = false, bool coal_allowed = false, int mcast_root = -1)
         : original_src_id(src), feature_id(fid), 
-          arrival_cycle(arr), start_cycle(start) {}
+          arrival_cycle(arr), start_cycle(start), coalesce_hint(hint), coalesce_allowed(coal_allowed), multicast_root_id(mcast_root) {}
     
-    MemoryRequest(int src, int fid, uint64_t arr, uint64_t start, const vector<int>& path)
+    MemoryRequest(int src, int fid, uint64_t arr, uint64_t start, const vector<int>& path, bool hint = false, bool coal_allowed = false, int mcast_root = -1)
         : original_src_id(src), feature_id(fid), 
-          arrival_cycle(arr), start_cycle(start), recorded_path(path) {}
+          arrival_cycle(arr), start_cycle(start), recorded_path(path), coalesce_hint(hint), coalesce_allowed(coal_allowed), multicast_root_id(mcast_root) {}
+    
+    MemoryRequest(int src, int fid, uint64_t arr, uint64_t start, const vector<int>& path, bool hint, bool coal_allowed, const vector<int>& mcast_dests, int mcast_root = -1)
+        : original_src_id(src), feature_id(fid), 
+          arrival_cycle(arr), start_cycle(start), recorded_path(path), coalesce_hint(hint), coalesce_allowed(coal_allowed), multicast_dests(mcast_dests), multicast_root_id(mcast_root) {}
 };
 
 class MemoryController {
@@ -51,11 +60,11 @@ private:
     uint64_t first_request_cycle;       // First cycle we received a request (for accurate util calc)
     
     // DRAM timing parameters (cycles)
-    static const uint64_t DRAM_BASE_LATENCY = 100;  // L_base: minimum latency (DRAM row access)
+    static const uint64_t DRAM_BASE_LATENCY = 250;  // L_base: minimum latency (DRAM row access)
     // INTERVAL=0 for maximum bandwidth, with packet_queue backpressure to prevent deadlock
     static const uint64_t DRAM_FLIT_INJECTION_INTERVAL = 0;  // Cycles between consecutive FLIT injections (0 = back-to-back, 1 = 50%, 2 = 33%)
     static const uint64_t RESPONSE_SIZE_FLITS = 4; // Number of flits per response (changed from 3 to 4)
-    static const size_t MAX_OUTSTANDING_REQUESTS = 32;  // MSHR depth per memory tile - limited by packet_queue backpressure
+    static const size_t MAX_OUTSTANDING_REQUESTS = 128;  // MSHR depth per memory tile - limited by packet_queue backpressure
     
     // Helper: get current simulation cycle
     uint64_t getCurrentCycle() const {
@@ -80,7 +89,10 @@ public:
     
     // Process an incoming REQUEST packet (called when HEAD flit arrives)
     bool processRequest(int src_pe_id, int feature_id, uint64_t arrival_cycle, 
-                        const vector<int>& recorded_path = vector<int>()) {
+                        const vector<int>& recorded_path = vector<int>(), bool coalesce_hint = false,
+                        bool coalesce_allowed = false,
+                        const vector<int>& multicast_dests = vector<int>(),
+                        int multicast_root_id = -1) {
         total_requests_received++;
         
         // PE credits (26 per PE × 9 PEs = 234 total) are system-wide limit
@@ -107,7 +119,8 @@ public:
         // SERVICE_TIME only limits response INJECTION rate (modeled in hasReadyResponse)
         
         // Create response with realistic DRAM timing, including recorded path for reverse routing
-        MemoryRequest response(src_pe_id, feature_id, arrival_cycle, response_ready, recorded_path);
+        // CRITICAL: Must pass coalesce_allowed to enable per-request multicast control!
+        MemoryRequest response(src_pe_id, feature_id, arrival_cycle, response_ready, recorded_path, coalesce_hint, coalesce_allowed, multicast_dests);
         ready_responses.push(response);
         in_flight_requests++;  // Track in-flight requests
         

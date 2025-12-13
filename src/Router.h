@@ -13,6 +13,8 @@
 
 #include <systemc.h>
 #include <unordered_map>
+#include <bitset>
+#include <array>
 #include "DataStructs.h"
 #include "Buffer.h"
 #include "Stats.h"
@@ -116,6 +118,97 @@ SC_MODULE(Router)
     uint64_t oracle_inflight_total_heads;      // all request heads considered
     uint64_t oracle_inflight_coalesced_heads;  // heads that arrived while another for same feature was outstanding
     
+    // ========================================================================
+    // SELECTIVE IN-ROUTER COALESCING MECHANISM
+    // ========================================================================
+    
+    // Coalescing table entry
+    struct CoalesceEntry {
+        bool valid;                                // Entry is allocated
+        int feature_id;                            // Feature being coalesced
+        bool inflight;                             // Request has been forwarded downstream
+        bool response_started;                     // Response arrived, multicast started - don't drop late requests
+        std::bitset<8> requester_ports;            // Bitset of input ports (max 6 directions + local + hub)
+        std::map<int, int> requester_pe_counts;    // Map: PE_ID -> count of requests from that PE
+        std::map<int, std::set<int>> port_to_pe_ids;  // Map: Port -> set of PE IDs that requested from that port
+        uint64_t allocation_cycle;                 // Cycle when this entry was allocated (for timeout cleanup)
+        
+        CoalesceEntry() : valid(false), feature_id(-1), inflight(false), response_started(false), allocation_cycle(0) {
+            requester_ports.reset();
+        }
+    };
+    
+    // Coalescing table (128 entries per router)
+    CoalesceEntry coalesce_table[COALESCE_TABLE_SIZE];
+    
+    // ========================================================================
+    // MULTICAST ENGINE (separate from reservation table)
+    // ========================================================================
+    
+    struct McPortState {
+        bool needed;        // This output must receive this packet
+        bool head_sent;     // Whether HEAD was sent to this output
+        bool done;          // Whether TAIL was sent to this output
+        bool reserved;      // Whether reservation table has reserved this (output, VC)
+        int next_flit_idx;  // Index of next flit this port needs (0-based)
+        int  vc;            // Chosen multicast VC (preserved from incoming traffic)
+        
+        McPortState() : needed(false), head_sent(false), done(false), reserved(false), next_flit_idx(0), vc(0) {}
+    };
+    
+    struct McEntry {
+        bool valid;
+        int feature_id;
+        int src_memtile;
+        std::bitset<8> out_ports_needed;  // Which output ports need this packet
+        std::vector<Flit> fifo;           // Stores packet flits in order (bounded)
+        McPortState port[8];              // State for each output port (DIRECTIONS+2)
+        
+        static const int MAX_FIFO_SIZE = 256;  // Maximum flits per multicast packet (e.g., 8 flits × 4 outputs)
+        
+        McEntry() : valid(false), feature_id(-1), src_memtile(-1) {
+            out_ports_needed.reset();
+            fifo.reserve(MAX_FIFO_SIZE);  // Pre-allocate to avoid reallocation
+        }
+    };
+    
+    static const int MC_ENGINE_SIZE = 1024;  // Number of multicast engine entries
+    McEntry mc_engine[MC_ENGINE_SIZE];
+    
+    // Mapping from (input_port, input_vc, feature_id) -> mc_entry_id (for collecting flits)
+    // Using tuple to support multiple responses on same port+VC
+    std::map<std::tuple<int,int,int>, int> input_to_mc_entry;
+    
+    // No longer used - multicast now preserves incoming VC instead of round-robin
+    int multicast_vc_rr_counter;
+    
+    // Track which VCs are currently occupied by multicast engine on each output port
+    // mc_vc_busy[output_port][vc] = true if multicast is using this VC on this port
+    bool mc_vc_busy[8][MAX_VIRTUAL_CHANNELS];  // 8 ports (DIRECTIONS+2), up to 16 VCs
+    
+    // Coalescing statistics
+    uint64_t coalesce_requests_received;      // Total coalescing-eligible requests seen
+    uint64_t coalesce_requests_merged;        // Requests that were merged (dropped at this router)
+    uint64_t coalesce_table_full_events;      // Times table was full, couldn't coalesce
+    uint64_t coalesce_responses_multicast;    // Response packets that were multicast
+    uint64_t coalesce_multicast_flits_sent;   // Individual flit copies sent via multicast
+    uint64_t coalesce_entries_timed_out;      // Entries freed due to timeout (>600 cycles)
+    
+    // Coalescing helper functions
+    int findCoalesceEntry(int feature_id);                    // Find existing entry by feature_id
+    int allocateCoalesceEntry(int feature_id);                // Allocate new entry
+    void freeCoalesceEntry(int entry_idx);                    // Free entry
+    void cleanupStaleCoalesceEntries();                       // Free entries stuck for >600 cycles
+    bool handleRequestCoalescing(Flit &f, int input_dir);     // Try to coalesce request
+    
+    // Multicast engine helper functions
+    int allocateMcEntry(int feature_id);                      // Allocate multicast engine entry
+    void freeMcEntry(int mc_idx);                             // Free multicast engine entry
+    int findMcEntry(int feature_id);                          // Find existing MC entry by feature_id
+    void serveMcEngine();                                      // Serve multicast engine (Phase 0)
+    std::vector<int> getMulticastOutputs(const Flit &f);      // Get output dirs for multicast response
+    void printStuckMcEntries();                                // Debug: print McEngine entries that never completed
+    
     // Functions
 
     void process();
@@ -187,6 +280,9 @@ SC_MODULE(Router)
     
     // Link utilization statistics
     void printLinkUtilization() const;
+    
+    // Selective coalescing statistics
+    void printSelectiveCoalescingStats() const;
     
     // Oracle coalescing tracking (instrumentation only)
     void trackOracleCoalescing(const Flit &f);

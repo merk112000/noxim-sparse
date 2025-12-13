@@ -51,23 +51,29 @@ vector<pair<int,int> > ReservationTable::getReservations(const int port_in)
     return reservations;
 }
 
-int ReservationTable::checkReservation(const TReservation r, const int port_out)
+int ReservationTable::checkReservation(const TReservation r, const int port_out, bool is_multicast)
 {
-    /* Sanity Check for forbidden table status:
-     * - same input/VC in a different output line */
-    for (int o=0;o<n_outputs;o++)
-    {
-	for (vector<TReservation>::size_type i=0;i<rtable[o].reservations.size(); i++)
-	{
-	    // In the current implementation this should never happen
-	    if (o!=port_out && rtable[o].reservations[i] == r)
-	    {
-		return RT_ALREADY_OTHER_OUT;
-	    }
-	}
+    /* MULTICAST FIX: Allow same (input,VC) to reserve multiple outputs ONLY for multicast responses
+     * For unicast: enforce the original rule (same input/VC cannot be in multiple outputs)
+     * For multicast: skip the cross-output check to allow packet replication
+     */
+    if (!is_multicast) {
+        // UNICAST: Check for forbidden table status (same input/VC in different output)
+        for (int o=0; o<n_outputs; o++)
+        {
+            for (vector<TReservation>::size_type i=0; i<rtable[o].reservations.size(); i++)
+            {
+                // Block unicast from reserving multiple outputs
+                if (o!=port_out && rtable[o].reservations[i] == r)
+                {
+                    return RT_ALREADY_OTHER_OUT;
+                }
+            }
+        }
     }
+    // For multicast, skip the cross-output check above
     
-     /* On a given output entry, reservations must differ by VC
+    /* On a given output entry, reservations must differ by VC
      *  Motivation: they will be interleaved cycle-by-cycle as index moves */
 
      int n_reservations = rtable[port_out].reservations.size();
@@ -100,13 +106,13 @@ void ReservationTable::print()
 }
 
 
-void ReservationTable::reserve(const TReservation r, const int port_out)
+void ReservationTable::reserve(TReservation r, const int port_out, bool is_multicast)
 {
     // IMPORTANT: problem when used by Hub with more connections
     //
     // reservation of reserved/not valid ports is illegal. Correctness
     // should be assured by ReservationTable users
-    assert(checkReservation(r, port_out)==RT_AVAILABLE);
+    assert(checkReservation(r, port_out, is_multicast)==RT_AVAILABLE);
 
     // TODO: a better policy could insert in a specific position as far a possible
     // from the current index

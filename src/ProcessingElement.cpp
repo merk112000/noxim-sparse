@@ -5,6 +5,8 @@
 #include <iomanip>
 #include <set>
 
+const unsigned int MAX_NI_QUEUE_SIZE = 128;
+
 int ProcessingElement::randInt(int min, int max)
 {
     return min +
@@ -39,11 +41,13 @@ void ProcessingElement::rxProcess()
 	        flit_tmp.packet_type == PACKET_TYPE_REQUEST && 
 	        (flit_tmp.flit_type == FLIT_TYPE_HEAD || flit_tmp.flit_type == FLIT_TYPE_HEAD_TAIL)) {
 	        
+	       // cerr << "PE[" << local_id << "] Memory tile received REQUEST HEAD fid=" << flit_tmp.feature_id << " from " << flit_tmp.src_id << endl;
+	        
 	        // Check both MSHR queue AND packet_queue (egress packets waiting to be sent)
 	        // If packet_queue is full, we can't generate more response packets!
-	        const size_t MAX_PACKET_QUEUE = 32;  // Limit egress packet queue size
+	        const size_t MAX_PACKET_QUEUE = 128;  // Limit egress packet queue size
 	        bool mshr_has_space = memory_controller->canAcceptRequest();
-	        bool packet_queue_has_space = (packet_queue.size() < MAX_PACKET_QUEUE);
+	        bool packet_queue_has_space = (packet_queue.size() < MAX_NI_QUEUE_SIZE);
 	        
 	        if (!mshr_has_space || !packet_queue_has_space) {
 	            // MSHR or packet queue FULL! Signal NOT READY - router will buffer the flit
@@ -68,53 +72,68 @@ void ProcessingElement::rxProcess()
 	            }
 	            handleIncomingRequest(flit_tmp);
 	        }
-	    } else {
-	        // For non-memory tiles or non-REQUEST-HEAD flits, always accept (no backpressure needed)
-	        // Process RESPONSE HEAD flits for compute PEs
-	        if (!is_memory_tile && 
-	            flit_tmp.packet_type == PACKET_TYPE_RESPONSE && 
-	            (flit_tmp.flit_type == FLIT_TYPE_HEAD || flit_tmp.flit_type == FLIT_TYPE_HEAD_TAIL)) {
-	            
-	            // Debug: verify we're only returning credits for HEAD flits
-	            if (GlobalParams::verbose_mode > VERBOSE_OFF) {
-	                cout << "PE[" << local_id << "] @ cycle " 
-	                     << (sc_time_stamp().to_double() / GlobalParams::clock_period_ps)
-	                     << ": Returning credit for RESPONSE HEAD from MemTile " << flit_tmp.src_id
-	                     << " (seq=" << flit_tmp.sequence_no << "/" << flit_tmp.sequence_length << ")" << endl;
-	            }
-	            
-	            returnCredit(flit_tmp.src_id);
-
-	            // Track end-to-end latency (REQUEST injection to RESPONSE arrival)
-	            int feature_id = flit_tmp.feature_id;
-	            if (request_injection_time.count(feature_id) > 0) {
-	                uint64_t cur_cycle = static_cast<uint64_t>(
-	                    sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
-	                uint64_t injection_cycle = request_injection_time[feature_id];
-	                uint64_t latency = cur_cycle - injection_cycle;
-	                
-	                total_e2e_latency += latency;
-	                e2e_latency_samples++;
-	                if (latency > max_e2e_latency) {
-	                    max_e2e_latency = latency;
-	                }
-	                
-	        // Track PE queue delay (time from packet creation to network entry)
-	                if (request_network_entry_time.count(feature_id) > 0) {
-	                    uint64_t network_entry = request_network_entry_time[feature_id];
-	                    uint64_t pe_queue_delay = network_entry - injection_cycle;
-	                    total_pe_queue_delay += pe_queue_delay;
-	                    if (pe_queue_delay > max_pe_queue_delay) {
-	                        max_pe_queue_delay = pe_queue_delay;
-	                    }
-	                    request_network_entry_time.erase(feature_id);
-	                }
-	                
-	                // Remove from map to free memory
-	                request_injection_time.erase(feature_id);
-	            }
-	        }
-	    }
+    } else {
+        // For non-memory tiles or non-REQUEST-HEAD flits, always accept (no backpressure needed)
+        // Process RESPONSE flits for compute PEs
+        if (!is_memory_tile && flit_tmp.packet_type == PACKET_TYPE_RESPONSE) {
+            
+            // Handle RESPONSE HEAD - return credit and track latency
+            if (flit_tmp.flit_type == FLIT_TYPE_HEAD) {
+                // CRITICAL: If response reached this PE's LOCAL port, it MUST be for us!
+                // Router wouldn't send it here otherwise (either via coalesce_table multicast or unicast routing)
+                // Always return credit when response HEAD arrives at PE
+                
+               /* cerr << "PE[" << local_id << "] Received RESPONSE HEAD from MemTile " << flit_tmp.src_id
+                     << " feature=" << flit_tmp.feature_id << " vc=" << flit_tmp.vc_id 
+                     << " - RETURNING CREDIT (now " << (total_memory_credits+1) << ")" << endl;*/
+                
+                total_responses_received++;  // Count responses received
+                
+                // Return credits - may be >1 if this response covers multiple coalesced requests from this PE
+                if (flit_tmp.credit_count > 1 && GlobalParams::simulation_time <= 50000) {
+                    cerr << "PE[" << local_id << "] Returning " << flit_tmp.credit_count 
+                         << " credits for feature " << flit_tmp.feature_id << endl;
+                }
+                for (int i = 0; i < flit_tmp.credit_count; i++) {
+                    returnCredit(flit_tmp.src_id);
+                }
+                
+                // Track end-to-end latency (REQUEST injection to RESPONSE arrival)
+                int feature_id = flit_tmp.feature_id;
+                if (request_injection_time.count(feature_id) > 0) {
+                    uint64_t cur_cycle = static_cast<uint64_t>(
+                        sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
+                    uint64_t injection_cycle = request_injection_time[feature_id];
+                    uint64_t latency = cur_cycle - injection_cycle;
+                    
+                    total_e2e_latency += latency;
+                    e2e_latency_samples++;
+                    if (latency > max_e2e_latency) {
+                        max_e2e_latency = latency;
+                    }
+                    
+                    // Track PE queue delay (time from packet creation to network entry)
+                    if (request_network_entry_time.count(feature_id) > 0) {
+                        uint64_t network_entry = request_network_entry_time[feature_id];
+                        uint64_t pe_queue_delay = network_entry - injection_cycle;
+                        total_pe_queue_delay += pe_queue_delay;
+                        if (pe_queue_delay > max_pe_queue_delay) {
+                            max_pe_queue_delay = pe_queue_delay;
+                        }
+                        request_network_entry_time.erase(feature_id);
+                    }
+                    
+                    // Remove from map to free memory
+                    request_injection_time.erase(feature_id);
+                    
+                    // Remove from outstanding requests tracking
+                    outstanding_requests.erase(feature_id);
+                }
+            }
+            // Note: BODY and TAIL flits are silently consumed (no action needed)
+            // The flit will be accepted (ready=true) and discarded
+        }
+    }
 	}
 	
 	// Always write READY status to upstream
@@ -178,12 +197,18 @@ void ProcessingElement::txProcess()
     // PHASE 2: Generate new packets and load output register (if empty)
     // ========================================================================
     // Only generate packets if output register is empty (backpressure from network handled by has_flit)
+    static int debug_phase2 = 0;
+    if (debug_phase2++ < 10 && GlobalParams::verbose_mode >= VERBOSE_LOW) {
+        cerr << "PE[" << local_id << "] PHASE 2: has_flit=" << has_flit 
+             << ", is_memory_tile=" << is_memory_tile << endl;
+    }
+    
     if (!has_flit) {
 	// Memory tiles generate RESPONSE packets
 	if (is_memory_tile) {
-	    // Limit NI queue - must be large enough to handle MSHR capacity (128)
+
 	    // Each response is multiple flits, so queue needs sufficient depth
-	    const unsigned int MAX_NI_QUEUE_SIZE = 32;
+	    
 	    
 	    if (packet_queue.size() < MAX_NI_QUEUE_SIZE) {
 		Packet packet;
@@ -202,6 +227,11 @@ void ProcessingElement::txProcess()
 	else if(GlobalParams::traffic_distribution != TRAFFIC_HARDCODED) {
 	    // Compute PEs use credit-based flow control, so no need for NI queue limit
 	    // (credits already limit outstanding requests to prevent network flooding)
+	    static int debug_count = 0;
+	    if (debug_count++ < 5 && GlobalParams::verbose_mode >= VERBOSE_LOW) {
+	        cerr << "PE[" << local_id << "] Compute PE block reached, calling canShot()" << endl;
+	    }
+	    
 	    Packet packet;
 	    if (canShot(packet)) {
 		packet_queue.push(packet);
@@ -218,7 +248,7 @@ void ProcessingElement::txProcess()
 		       : traffic_hardcoded->traffic_at_cycle(traffic_cycle)) {
 		if(expected_packet.src == local_id) {
 		    Packet packet;
-		    int vc = randInt(0,GlobalParams::n_virtual_channels-1);
+		    int vc = randInt(0, GlobalParams::n_virtual_channels - 1);
 		    packet.make(local_id, expected_packet.dst, vc, now, getRandomSize());
 		    packet_queue.push(packet);
 		    any = true;
@@ -298,7 +328,14 @@ Flit ProcessingElement::nextFlit()
     flit.feature_id = packet.feature_id;  // Propagate feature_id from packet to flit
     flit.packet_type = packet.packet_type; // Propagate packet type
     flit.recorded_path = packet.recorded_path;  // Propagate recorded path for reverse routing
+    flit.multicast_dests = packet.multicast_dests;  // Propagate multicast destinations for response multicasting
     flit.oracle_coalesce_marked = false;  // Initialize oracle coalescing marker
+    flit.coalesce_hint = packet.coalesce_hint;  // Propagate coalescing hint
+    flit.coalesce_allowed = (packet.packet_type == PACKET_TYPE_REQUEST && packet.coalesce_hint);  // Initially allow coalescing for eligible REQUESTs
+    flit.multicast_allowed = packet.multicast_allowed;  // Propagate per-request multicast permission from packet
+    flit.multicast_root_id = packet.multicast_root_id;  // Propagate multicast root router ID
+    flit.original_src_id = packet.src_id;  // Track original requester for multicast
+    flit.credit_count = 1;  // Default: return 1 credit (will be updated by coalesce table for duplicates)
 
     flit.hub_relay_node = NOT_VALID;
 
@@ -331,6 +368,12 @@ Flit ProcessingElement::nextFlit()
 
 bool ProcessingElement::canShot(Packet & packet)
 {
+    static int debug_count = 0;
+    if (debug_count++ < 10 && GlobalParams::verbose_mode >= VERBOSE_LOW) {
+        cerr << "PE[" << local_id << "] canShot() called, is_memory_tile=" << is_memory_tile 
+             << ", traffic_dist=" << GlobalParams::traffic_distribution << endl;
+    }
+    
    // assert(false);
     if(never_transmit) return false;
    
@@ -405,7 +448,7 @@ bool ProcessingElement::canShot(Packet & packet)
 	if (shot) {
 	    for (unsigned int i = 0; i < dst_prob.size(); i++) {
 		if (prob < dst_prob[i].second) {
-                    int vc = randInt(0,GlobalParams::n_virtual_channels-1);
+                    int vc = randInt(0, GlobalParams::n_virtual_channels - 1);
 		    packet.make(local_id, dst_prob[i].first, vc, now, getRandomSize());
 		    break;
 		}
@@ -445,7 +488,7 @@ Packet ProcessingElement::trafficLocal()
     p.dst_id = dst_set[i_rnd];
     p.timestamp = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
     p.size = p.flit_left = getRandomSize();
-    p.vc_id = randInt(0,GlobalParams::n_virtual_channels-1);
+    p.vc_id = randInt(0, GlobalParams::n_virtual_channels - 1);
     
     return p;
 }
@@ -517,7 +560,7 @@ Packet ProcessingElement::trafficULocal()
 
     p.timestamp = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
     p.size = p.flit_left = getRandomSize();
-    p.vc_id = randInt(0,GlobalParams::n_virtual_channels-1);
+    p.vc_id = randInt(0, GlobalParams::n_virtual_channels - 1);
 
     return p;
 }
@@ -562,7 +605,7 @@ Packet ProcessingElement::trafficRandom()
 
     p.timestamp = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
     p.size = p.flit_left = getRandomSize();
-    p.vc_id = randInt(0,GlobalParams::n_virtual_channels-1);
+    p.vc_id = randInt(0, GlobalParams::n_virtual_channels - 1);
 
     return p;
 }
@@ -575,7 +618,7 @@ Packet ProcessingElement::trafficTest()
 
     p.timestamp = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
     p.size = p.flit_left = getRandomSize();
-    p.vc_id = randInt(0,GlobalParams::n_virtual_channels-1);
+    p.vc_id = randInt(0, GlobalParams::n_virtual_channels - 1);
 
     return p;
 }
@@ -595,7 +638,7 @@ Packet ProcessingElement::trafficTranspose1()
     fixRanges(src, dst);
     p.dst_id = coord2Id(dst);
 
-    p.vc_id = randInt(0,GlobalParams::n_virtual_channels-1);
+    p.vc_id = randInt(0, GlobalParams::n_virtual_channels - 1);
     p.timestamp = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
     p.size = p.flit_left = getRandomSize();
 
@@ -617,7 +660,7 @@ Packet ProcessingElement::trafficTranspose2()
     fixRanges(src, dst);
     p.dst_id = coord2Id(dst);
 
-    p.vc_id = randInt(0,GlobalParams::n_virtual_channels-1);
+    p.vc_id = randInt(0, GlobalParams::n_virtual_channels - 1);
     p.timestamp = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
     p.size = p.flit_left = getRandomSize();
 
@@ -662,7 +705,7 @@ Packet ProcessingElement::trafficBitReversal()
     p.src_id = local_id;
     p.dst_id = dnode;
 
-    p.vc_id = randInt(0,GlobalParams::n_virtual_channels-1);
+    p.vc_id = randInt(0, GlobalParams::n_virtual_channels - 1);
     p.timestamp = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
     p.size = p.flit_left = getRandomSize();
 
@@ -686,7 +729,7 @@ Packet ProcessingElement::trafficShuffle()
     p.src_id = local_id;
     p.dst_id = dnode;
 
-    p.vc_id = randInt(0,GlobalParams::n_virtual_channels-1);
+    p.vc_id = randInt(0, GlobalParams::n_virtual_channels - 1);
     p.timestamp = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
     p.size = p.flit_left = getRandomSize();
 
@@ -709,7 +752,7 @@ Packet ProcessingElement::trafficButterfly()
     p.src_id = local_id;
     p.dst_id = dnode;
 
-    p.vc_id = randInt(0,GlobalParams::n_virtual_channels-1);
+    p.vc_id = randInt(0, GlobalParams::n_virtual_channels - 1);
     p.timestamp = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
     p.size = p.flit_left = getRandomSize();
 
@@ -743,23 +786,24 @@ unsigned int ProcessingElement::getQueueSize() const
 
 bool ProcessingElement::isMemoryTile(int id)
 {
-    // Memory tile IDs for a 4x4 mesh (16 total tiles)
-    // ID layout in 4x4 mesh (row-major: id = x + y * mesh_dim_x):
-    //  0  1  2  3
-    //  4  5  6  7
-    //  8  9 10 11
-    // 12 13 14 15
+    // Memory tile IDs for a 5x5 mesh (25 total tiles)
+    // ID layout in 5x5 mesh (row-major: id = x + y * mesh_dim_x):
+    //  0  1  2  3  4
+    //  5  6  7  8  9
+    // 10 11 12 13 14
+    // 15 16 17 18 19
+    // 20 21 22 23 24
     //
-    // Memory tiles (8 total - 2 intermediate tiles on each side):
-    // Left side: 4, 8    Right side: 7, 11
-    // Top side: 1, 2     Bottom side: 13, 14
-    // Compute PEs (8 total): 0, 3, 5, 6, 9, 10, 12, 15
+    // Memory tiles: Top and bottom rows (10 total)
+    // Top row: 0, 1, 2, 3, 4
+    // Bottom row: 20, 21, 22, 23, 24
+    // Compute PEs (15 total): 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
     
     static const int MEMORY_TILE_IDS[] = {
-        1, 2, 3, 5, 9, 10, 14, 15, 19, 21, 22, 23
+       0,1,2,3,4,20,21,22,23,24
     };
 
-    static const int NUM_MEMORY_TILES = 12;
+    static const int NUM_MEMORY_TILES = 10;
     
     for (int i = 0; i < NUM_MEMORY_TILES; i++) {
         if (id == MEMORY_TILE_IDS[i])
@@ -840,7 +884,7 @@ void ProcessingElement::loadTraceFile()
         if (line.empty() || line[0] == '#' || line[0] == '%')
             continue;
 
-        // Parse trace line: cycle src dst feature_id
+        // Parse trace line: cycle src dst feature_id [coalesce_hint]
         istringstream iss(line);
         TraceEvent event;
         
@@ -850,6 +894,14 @@ void ProcessingElement::loadTraceFile()
                 cerr << "Error: PE " << local_id << " trace file line " << line_num 
                      << " has mismatched src=" << event.src << endl;
                 continue;
+            }
+            
+            // Try to read optional coalesce_hint (0 or 1)
+            int hint_val = 0;
+            if (iss >> hint_val) {
+                event.coalesce_hint = (hint_val == 1);
+            } else {
+                event.coalesce_hint = false;  // Default: no coalescing
             }
             
             trace_events.push_back(event);
@@ -871,8 +923,14 @@ bool ProcessingElement::canShotTrace(Packet & packet)
         return false;
 
     // If we've exhausted all trace events, no more injections
-    if (next_event_idx >= trace_events.size())
+    if (next_event_idx >= trace_events.size()) {
+        static bool warned = false;
+        if (!warned && GlobalParams::verbose_mode >= VERBOSE_LOW) {
+            cerr << "PE[" << local_id << "] exhausted all trace events" << endl;
+            warned = true;
+        }
         return false;
+    }
 
     // Get current cycle (absolute simulation time)
     uint64_t cur_cycle = static_cast<uint64_t>(
@@ -888,6 +946,11 @@ bool ProcessingElement::canShotTrace(Packet & packet)
 
     // Wait until the trace event's scheduled cycle
     if (sim_cycle < event.cycle) {
+        static int debug_count = 0;
+        if (debug_count++ < 5 && GlobalParams::verbose_mode >= VERBOSE_LOW) {
+            cerr << "PE[" << local_id << "] waiting for event " << next_event_idx 
+                 << ": sim_cycle=" << sim_cycle << " < event.cycle=" << event.cycle << endl;
+        }
         return false;  // Not time yet - wait
     }
 
@@ -912,6 +975,11 @@ bool ProcessingElement::canShotTrace(Packet & packet)
 
     // Check if we have credit for the destination memory tile
     if (!hasCredit(event.dst)) {
+        static int debug_count = 0;
+        if (debug_count++ < 5 && GlobalParams::verbose_mode >= VERBOSE_LOW) {
+            cerr << "PE[" << local_id << "] NO CREDIT for dst=" << event.dst 
+                 << " (have " << total_memory_credits << " credits)" << endl;
+        }
         stall_cycles_no_credits++;  // STALL REASON: Memory system backpressure (no credits)
         return false;  // No credit available - wait (backpressure from memory system)
     }
@@ -919,15 +987,20 @@ bool ProcessingElement::canShotTrace(Packet & packet)
     // Create the REQUEST packet
     double now = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
     
-    // Use ANY VC from full range (no separation between REQs and RESPs)
-    // Deadlock prevention relies on proper buffer sizing and credit control
-    int vc = randInt(0, GlobalParams::n_virtual_channels - 1);
+    // NO VC PARTITIONING: All traffic uses ALL VCs (0 to n_virtual_channels-1)
+    // REQUESTs, RESPONSEs, unicast, and multicast all share the full VC range
+    // Multicast engine coordinates with reservation table via mc_vc_busy tracking
+    const int REQUEST_VC_START = 0;
+    const int REQUEST_VC_END = GlobalParams::n_virtual_channels - 1;
+    int vc = randInt(REQUEST_VC_START, REQUEST_VC_END);
     
     // REQUEST packets are 2 flits (2 flits × 128 bits/flit = 256 bits = 32 bytes)
     const int REQUEST_SIZE_FLITS = 1;
+    
     packet.make(local_id, event.dst, vc, now, REQUEST_SIZE_FLITS);
     packet.feature_id = event.feature_id;
     packet.packet_type = PACKET_TYPE_REQUEST;
+    packet.coalesce_hint = event.coalesce_hint;  // Propagate hint from trace
     
     // Consume one credit for this memory tile
     consumeCredit(event.dst);
@@ -937,6 +1010,13 @@ bool ProcessingElement::canShotTrace(Packet & packet)
 
     // Track REQUEST injection time for end-to-end latency measurement
     request_injection_time[event.feature_id] = cur_cycle;
+    
+    // Track outstanding request for debugging
+    OutstandingRequest req;
+    req.injection_cycle = cur_cycle;
+    req.dst_mem_tile = event.dst;
+    req.feature_id = event.feature_id;
+    outstanding_requests[event.feature_id] = req;
 
     // Advance to next event (will be done after successful transmission)
     // Note: We don't increment here - let txProcess do it after pushing to queue
@@ -961,9 +1041,9 @@ void ProcessingElement::handleIncomingRequest(const Flit& flit)
     memory_controller->markFirstRequest(arrival_cycle);
 
     // Process the request through DRAM model
-    // Pass the recorded path for XY_PATH_REVERSE mode
+    // Pass the recorded path for XY_PATH_REVERSE mode, coalesce hint, coalesce_allowed (per-request), multicast destinations, and multicast_root_id
     // Should always succeed since we checked canAcceptRequest() before calling this
-    bool accepted = memory_controller->processRequest(flit.src_id, flit.feature_id, arrival_cycle, flit.recorded_path);
+    bool accepted = memory_controller->processRequest(flit.src_id, flit.feature_id, arrival_cycle, flit.recorded_path, flit.coalesce_hint, flit.coalesce_allowed, flit.multicast_dests, flit.multicast_root_id);
     
     if (!accepted) {
         cerr << "ERROR: MemCtrl rejected request even though canAcceptRequest() returned true!" << endl;
@@ -993,14 +1073,20 @@ bool ProcessingElement::canShotResponse(Packet & packet)
     const int RESPONSE_SIZE_FLITS = 4;  // Updated from 3 to 4
     double now = sc_time_stamp().to_double() / GlobalParams::clock_period_ps;
     
-    // Use ANY VC from full range (no separation between REQs and RESPs)
-    // Deadlock prevention relies on proper buffer sizing and credit control
+    // NO VC PARTITIONING: All traffic uses ALL VCs (0 to n_virtual_channels-1)
+    // Memory tiles use full VC range for RESPONSE transmission
+    // Multicast engine preserves incoming VC, reservation table checks mc_vc_busy
     int vc = randInt(0, GlobalParams::n_virtual_channels - 1);
     
     packet.make(local_id, resp.original_src_id, vc, now, RESPONSE_SIZE_FLITS);
     packet.feature_id = resp.feature_id;
     packet.packet_type = PACKET_TYPE_RESPONSE;
     packet.recorded_path = resp.recorded_path;  // Attach recorded path for reverse routing
+    packet.coalesce_hint = resp.coalesce_hint;  // Propagate coalesce hint from original request
+    packet.multicast_allowed = resp.coalesce_allowed;  // CRITICAL: Copy per-request coalesce decision to response
+    packet.multicast_root_id = resp.multicast_root_id;  // Propagate multicast root router ID (for future use)
+    
+    // NOTE: multicast_dests left EMPTY - routers handle multicasting via coalesce_table
 
     if (GlobalParams::verbose_mode > VERBOSE_OFF) {
         cout << "MemTile[" << local_id << "] @ cycle " << current_cycle
@@ -1107,7 +1193,7 @@ void ProcessingElement::initMemoryCredits()
     //   64 × 8 ≥ 64 × 4 + 17 × credits × 1
     //   512 ≥ 256 + 17 × credits
     //   credits ≤ 256/17 = 15.05 → 15 credits per PE
-    const int TOTAL_CREDITS_PER_PE = 18;
+    const int TOTAL_CREDITS_PER_PE = 40;  // Total credits per PE for all memory tiles
     
     // Only initialize once per PE (track by PE id)
     static std::set<int> initialized_pes;
@@ -1115,6 +1201,7 @@ void ProcessingElement::initMemoryCredits()
     initialized_pes.insert(local_id);
     
     total_memory_credits = TOTAL_CREDITS_PER_PE;
+    total_responses_received = 0;  // Initialize response counter
     
     if (GlobalParams::verbose_mode >= VERBOSE_LOW) {
         cout << "PE[" << local_id << "] initialized with " << TOTAL_CREDITS_PER_PE 
@@ -1142,7 +1229,7 @@ void ProcessingElement::consumeCredit(int mem_tile_id)
 // Return one credit when receiving a RESPONSE
 void ProcessingElement::returnCredit(int src_mem_tile)
 {
-    const int MAX_CREDITS = 64;  // Match TOTAL_CREDITS_PER_PE initialization
+    const int MAX_CREDITS = 40;  // Match TOTAL_CREDITS_PER_PE initialization
     
     // Safety check: prevent credit overflow bug
     if (total_memory_credits >= MAX_CREDITS) {
@@ -1153,6 +1240,8 @@ void ProcessingElement::returnCredit(int src_mem_tile)
     }
     
     total_memory_credits++;
+    
+    //cerr << "PE[" << local_id << "] returnCredit() - now have " << total_memory_credits << " credits" << endl;
 }
 
 // Print heartbeat statistics
@@ -1166,10 +1255,96 @@ void ProcessingElement::printHeartbeat(int id, uint64_t cycle)
              << ", DRAM egress queue: " << memory_controller->getPendingCount() << endl;
     } else if (!is_memory_tile && !trace_events.empty()) {
         // Compute PE status (trace-based)
+        int outstanding = total_requests_injected - total_responses_received;
+        int sum = total_memory_credits + outstanding;
         cout << "  [PE " << id << "] REQs sent: " << total_requests_injected 
-             << ", Trace: " << next_event_idx << "/" << trace_events.size()
-             << ", Credits: " << total_memory_credits << "/64"
-             << ", Queue: " << packet_queue.size() << endl;
+            << ", RESPs recv: " << total_responses_received
+            << ", Trace: " << next_event_idx << "/" << trace_events.size()
+            << ", Credits: " << total_memory_credits << "/32"
+            << ", Outstanding: " << outstanding
+            << ", Credits+Outstanding: " << sum
+            << ", Queue: " << packet_queue.size() << endl;
+        
+        // Check for missing responses
+       // checkMissingResponses();
     }
 }
+
+void ProcessingElement::checkMissingResponses()
+{
+    uint64_t cur_cycle = static_cast<uint64_t>(
+        sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
+    
+    // Check for requests outstanding longer than 1000 cycles (should be ~300 cycles max)
+    // If response hasn't arrived, return the credit to prevent deadlock
+    const uint64_t TIMEOUT_CYCLES = 1000;
+    
+    std::vector<int> timed_out_requests;
+    
+    for (const auto& entry : outstanding_requests) {
+        int fid = entry.first;
+        const OutstandingRequest& req = entry.second;
+        uint64_t age = cur_cycle - req.injection_cycle;
+        
+        if (age > TIMEOUT_CYCLES) {
+            cerr << "*** PE[" << local_id << "] TIMEOUT: feature_id=" << fid
+                 << " dst=MemTile[" << req.dst_mem_tile << "]"
+                 << " age=" << age << " cycles - RETURNING CREDIT" << endl;
+            
+            // Return the credit that was consumed when this request was sent
+            returnCredit(req.dst_mem_tile);
+            
+            // Track timeout count for this feature
+            timeout_counts_per_feature[fid]++;
+            
+            // Mark for removal
+            timed_out_requests.push_back(fid);
+        }
+    }
+    
+    // Remove timed-out requests from tracking maps
+    for (int fid : timed_out_requests) {
+        outstanding_requests.erase(fid);
+        request_injection_time.erase(fid);
+        request_network_entry_time.erase(fid);
+    }
+}
+
+void ProcessingElement::printTimeoutStats() const
+{
+    if (is_memory_tile) {
+        return;  // Only compute PEs track timeouts
+    }
+    
+    if (timeout_counts_per_feature.empty()) {
+        cout << "PE[" << local_id << "] Timeout Statistics: No timeouts occurred" << endl;
+        return;
+    }
+    
+    int total_timeouts = 0;
+    for (const auto& entry : timeout_counts_per_feature) {
+        total_timeouts += entry.second;
+    }
+    
+    cout << "PE[" << local_id << "] Timeout Statistics (Credits Returned):" << endl;
+    cout << "  Total timeouts: " << total_timeouts << endl;
+    cout << "  Unique features: " << timeout_counts_per_feature.size() << endl;
+    cout << "  Per-feature breakdown (showing features with >0 timeouts):" << endl;
+    
+    // Sort by feature_id for consistent output
+    std::vector<std::pair<int, int>> sorted_timeouts(timeout_counts_per_feature.begin(), timeout_counts_per_feature.end());
+    std::sort(sorted_timeouts.begin(), sorted_timeouts.end());
+    
+    int shown = 0;
+    const int MAX_SHOW = 20;  // Show first 20 features
+    for (const auto& entry : sorted_timeouts) {
+        if (shown >= MAX_SHOW) {
+            cout << "    ... (" << (sorted_timeouts.size() - MAX_SHOW) << " more features)" << endl;
+            break;
+        }
+        cout << "    Feature " << entry.first << ": " << entry.second << " timeout(s)" << endl;
+        shown++;
+    }
+}
+
 
