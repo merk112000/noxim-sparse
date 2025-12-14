@@ -123,6 +123,7 @@ SC_MODULE(NoC)
 
     // Support methods
     Tile *searchNode(const int id) const;
+    bool allTraceEventsCompleted(uint64_t max_inflight = 10) const;
 
   private:
 

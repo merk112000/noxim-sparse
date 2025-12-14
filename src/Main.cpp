@@ -107,12 +107,13 @@ int sc_main(int arg_num, char *arg_vet[])
     cout << " Now running for " << GlobalParams:: simulation_time << " cycles..." << endl;
     
     // Run simulation with heartbeat every 100k cycles
-    uint64_t heartbeat_interval = 50000;
+    uint64_t heartbeat_interval = 10000;
+    uint64_t stoppage_check_interval = 100;
     uint64_t total_cycles = GlobalParams::simulation_time;
     uint64_t cycles_run = 0;
     
     while (cycles_run < total_cycles) {
-        uint64_t cycles_to_run = min(heartbeat_interval, total_cycles - cycles_run);
+        uint64_t cycles_to_run = min(stoppage_check_interval, total_cycles - cycles_run);
         sc_start((double)(cycles_to_run * GlobalParams::clock_period_ps), SC_PS);
         cycles_run += cycles_to_run;
         
@@ -130,7 +131,14 @@ int sc_main(int arg_num, char *arg_vet[])
                     n->t[x][y]->pe->printHeartbeat(id, cycles_run);
                 }
             }
-            cout << "========================================\n" << endl;
+           // cout << "========================================\n" << endl;
+        }
+        
+        // Check for early termination every 100 cycles: all trace events sent and in-flight < 10
+        if (n->allTraceEventsCompleted(15)) {
+            cout << "\n*** EARLY TERMINATION: All trace events sent and in-flight requests < 10 ***" << endl;
+            cout << "    Stopped at cycle " << cycles_run << " (configured: " << total_cycles << ")" << endl;
+            break;
         }
     }
 
@@ -179,12 +187,12 @@ int sc_main(int arg_num, char *arg_vet[])
     }
     
     // Show timeout statistics for compute PEs (credits returned for missing responses)
-    cout << endl << "Timeout Statistics (Missing Responses - Credits Returned):" << endl;
+   /* cout << endl << "Timeout Statistics (Missing Responses - Credits Returned):" << endl;
     for (int y = 0; y < GlobalParams::mesh_dim_y; y++) {
         for (int x = 0; x < GlobalParams::mesh_dim_x; x++) {
             n->t[x][y]->pe->printTimeoutStats();
         }
-    }
+    }*/
     
     // Show router link utilization for memory tile routers
     cout << endl << "Memory Tile Router Link Utilization:" << endl;

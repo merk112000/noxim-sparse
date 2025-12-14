@@ -580,7 +580,7 @@ void Router::perCycleUpdate()
     } else {
         // Clean up stale coalesce entries (every cycle check)
         if (GlobalParams::enable_selective_coalescing) {
-            //cleanupStaleCoalesceEntries();
+            cleanupStaleCoalesceEntries();
         }
         
         selectionStrategy->perCycleUpdate(this);
@@ -849,9 +849,10 @@ void Router::configure(const int _id,
     coalesce_responses_multicast = 0;
     coalesce_entries_timed_out = 0;
     multicast_vc_rr_counter = 0;  // No longer used - VCs preserved from incoming traffic
+    mc_rr_idx = 0;  // Round-robin starting index for multicast engine
     
     // Initialize multicast VC busy tracking
-    for (int port = 0; port < 8; port++) {
+    for (int port = 0; port < DIRECTIONS + 2; port++) {
         for (int vc = 0; vc < MAX_VIRTUAL_CHANNELS; vc++) {
             mc_vc_busy[port][vc] = false;
         }
@@ -1212,7 +1213,9 @@ void Router::serveMcEngine()
     // Serve multicast engine entries - send flits gradually to multiple outputs
     // Each port progresses independently through the FIFO
     // CRITICAL FIX: Multicast now uses reservation table to prevent deadlock
-    for (int mc_idx = 0; mc_idx < MC_ENGINE_SIZE; mc_idx++) {
+    // FAIRNESS: Use round-robin to avoid starving high-index entries
+    for (int step = 0; step < MC_ENGINE_SIZE; step++) {
+        int mc_idx = (mc_rr_idx + step) % MC_ENGINE_SIZE;
         McEntry &mc = mc_engine[mc_idx];
         
         if (!mc.valid) {
@@ -1225,7 +1228,10 @@ void Router::serveMcEngine()
         }
         
         // PHASE A: Check if unicast is using VCs we need (multicast bypasses reservation table)
-        for (int o = 0; o < DIRECTIONS + 2; o++) {
+        // FAIRNESS: Use per-entry round-robin to fairly cycle through ports
+        int start_port = mc.port_rr_start;
+        for (int port_step = 0; port_step < DIRECTIONS + 2; port_step++) {
+            int o = (start_port + port_step) % (DIRECTIONS + 2);
             if (!mc.port[o].needed || mc.port[o].done || mc.port[o].head_sent) {
                 continue;  // Skip if not needed, done, or HEAD already sent
             }
@@ -1269,7 +1275,9 @@ void Router::serveMcEngine()
         }
         
         // PHASE B: Try to send flits for each output
-        for (int o = 0; o < DIRECTIONS + 2; o++) {
+        // FAIRNESS: Use per-entry round-robin starting from same point as Phase A
+        for (int port_step = 0; port_step < DIRECTIONS + 2; port_step++) {
+            int o = (start_port + port_step) % (DIRECTIONS + 2);
             if (!mc.port[o].needed || mc.port[o].done) {
                 continue;  // This output doesn't need packet or already done
             }
@@ -1343,6 +1351,9 @@ void Router::serveMcEngine()
             has_flit[o] = true;
             mc.port[o].next_flit_idx++;
             
+            // Advance per-entry round-robin pointer for fairness across ports
+            mc.port_rr_start = (o + 1) % (DIRECTIONS + 2);
+            
             // Update state
             if (is_head) {
                 mc.port[o].head_sent = true;
@@ -1384,6 +1395,9 @@ void Router::serveMcEngine()
             coalesce_responses_multicast++;
         }
     }
+    
+    // Advance round-robin index for next cycle (fairness across all mc entries)
+    mc_rr_idx = (mc_rr_idx + 1) % MC_ENGINE_SIZE;
 }
 
 void Router::printStuckMcEntries()
@@ -1428,6 +1442,7 @@ int Router::allocateMcEntry(int feature_id)
             mc_engine[i].src_memtile = -1;
             mc_engine[i].out_ports_needed.reset();
             mc_engine[i].fifo.clear();
+            mc_engine[i].port_rr_start = 0;  // Initialize per-entry round-robin port index
             for (int o = 0; o < DIRECTIONS + 2; o++) {
                 mc_engine[i].port[o].needed = false;
                 mc_engine[i].port[o].head_sent = false;
@@ -1720,7 +1735,7 @@ void Router::printOracleCoalescingStats() const
 void Router::cleanupStaleCoalesceEntries()
 {
     uint64_t cur_cycle = (uint64_t)(sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
-    const uint64_t TIMEOUT_CYCLES = 2000;
+    const uint64_t TIMEOUT_CYCLES = 1000;
     
     for (int i = 0; i < COALESCE_TABLE_SIZE; i++) {
         if (!coalesce_table[i].valid) {

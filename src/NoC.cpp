@@ -12,6 +12,32 @@
 
 using namespace std;
 
+bool NoC::allTraceEventsCompleted(uint64_t max_inflight) const
+{
+    bool all_sent = true;
+    bool all_below_threshold = true;
+    
+    // Check all PEs
+    for (int y = 0; y < GlobalParams::mesh_dim_y; y++) {
+        for (int x = 0; x < GlobalParams::mesh_dim_x; x++) {
+            ProcessingElement* pe = t[x][y]->pe;
+            
+            // Check if all trace events have been sent
+            if (!pe->allTraceEventsSent()) {
+                all_sent = false;
+            }
+            
+            // Check if this PE has in-flight requests >= threshold
+            if (pe->getInFlightRequests() >= max_inflight) {
+                all_below_threshold = false;
+            }
+        }
+    }
+    
+    // Completion criteria: all events sent AND every PE has in-flight < threshold
+    return all_sent && all_below_threshold;
+}
+
 inline int toggleKthBit(int n, int k) 
 { 
     return (n ^ (1 << (k-1))); 

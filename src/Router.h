@@ -163,10 +163,11 @@ SC_MODULE(Router)
         std::bitset<8> out_ports_needed;  // Which output ports need this packet
         std::vector<Flit> fifo;           // Stores packet flits in order (bounded)
         McPortState port[8];              // State for each output port (DIRECTIONS+2)
+        int port_rr_start;                // Round-robin starting port for fair scheduling
         
         static const int MAX_FIFO_SIZE = 256;  // Maximum flits per multicast packet (e.g., 8 flits × 4 outputs)
         
-        McEntry() : valid(false), feature_id(-1), src_memtile(-1) {
+        McEntry() : valid(false), feature_id(-1), src_memtile(-1), port_rr_start(0) {
             out_ports_needed.reset();
             fifo.reserve(MAX_FIFO_SIZE);  // Pre-allocate to avoid reallocation
         }
@@ -184,7 +185,10 @@ SC_MODULE(Router)
     
     // Track which VCs are currently occupied by multicast engine on each output port
     // mc_vc_busy[output_port][vc] = true if multicast is using this VC on this port
-    bool mc_vc_busy[8][MAX_VIRTUAL_CHANNELS];  // 8 ports (DIRECTIONS+2), up to 16 VCs
+    bool mc_vc_busy[DIRECTIONS+2][MAX_VIRTUAL_CHANNELS];  // 8 ports (DIRECTIONS+2), up to 16 VCs
+    
+    // Round-robin scheduling for multicast engine fairness
+    int mc_rr_idx;  // Starting index for round-robin scan over mc_engine entries
     
     // Coalescing statistics
     uint64_t coalesce_requests_received;      // Total coalescing-eligible requests seen

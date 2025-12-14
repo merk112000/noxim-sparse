@@ -5,7 +5,7 @@
 #include <iomanip>
 #include <set>
 
-const unsigned int MAX_NI_QUEUE_SIZE = 128;
+const unsigned int MAX_NI_QUEUE_SIZE = 64;
 
 int ProcessingElement::randInt(int min, int max)
 {
@@ -127,7 +127,23 @@ void ProcessingElement::rxProcess()
                     request_injection_time.erase(feature_id);
                     
                     // Remove from outstanding requests tracking
-                    outstanding_requests.erase(feature_id);
+                    // NOTE: outstanding_requests is indexed by sequence number, not feature_id
+                    // We need to find and remove the OLDEST request with this feature_id
+                    // (should be the first one that was sent, FIFO order for same feature)
+                    uint64_t seq_to_remove = UINT64_MAX;
+                    uint64_t oldest_injection_cycle = UINT64_MAX;
+                    for (const auto& entry : outstanding_requests) {
+                        if (entry.second.feature_id == feature_id) {
+                            // Found a matching feature_id - check if it's older
+                            if (entry.second.injection_cycle < oldest_injection_cycle) {
+                                oldest_injection_cycle = entry.second.injection_cycle;
+                                seq_to_remove = entry.first;
+                            }
+                        }
+                    }
+                    if (seq_to_remove != UINT64_MAX) {
+                        outstanding_requests.erase(seq_to_remove);
+                    }
                 }
             }
             // Note: BODY and TAIL flits are silently consumed (no action needed)
@@ -916,6 +932,31 @@ void ProcessingElement::loadTraceFile()
     cout << "Compute PE " << local_id << " (trace_id=" << trace_pe_id << ") loaded " << trace_events.size() << " trace events" << endl;
 }
 
+bool ProcessingElement::allTraceEventsSent() const
+{
+    // For memory tiles, always return true (they don't inject trace traffic)
+    if (is_memory_tile)
+        return true;
+    
+    // For compute PEs, check if all trace events have been sent
+    return next_event_idx >= trace_events.size();
+}
+
+uint64_t ProcessingElement::getInFlightRequests() const
+{
+    // For memory tiles, no in-flight requests to track
+    if (is_memory_tile)
+        return 0;
+    
+    // Calculate in-flight = requests sent - responses received
+    // total_requests_injected counts REQUEST packets sent
+    // total_responses_received counts RESPONSE packets received
+    if (total_requests_injected >= total_responses_received)
+        return total_requests_injected - total_responses_received;
+    else
+        return 0;  // Shouldn't happen, but protect against underflow
+}
+
 bool ProcessingElement::canShotTrace(Packet & packet)
 {
     // Memory tiles do not inject trace-based traffic
@@ -1011,12 +1052,13 @@ bool ProcessingElement::canShotTrace(Packet & packet)
     // Track REQUEST injection time for end-to-end latency measurement
     request_injection_time[event.feature_id] = cur_cycle;
     
-    // Track outstanding request for debugging
+    // Track outstanding request for debugging using unique sequence number
+    uint64_t this_request_seq = next_request_seq++;
     OutstandingRequest req;
     req.injection_cycle = cur_cycle;
     req.dst_mem_tile = event.dst;
     req.feature_id = event.feature_id;
-    outstanding_requests[event.feature_id] = req;
+    outstanding_requests[this_request_seq] = req;
 
     // Advance to next event (will be done after successful transmission)
     // Note: We don't increment here - let txProcess do it after pushing to queue
@@ -1193,7 +1235,7 @@ void ProcessingElement::initMemoryCredits()
     //   64 × 8 ≥ 64 × 4 + 17 × credits × 1
     //   512 ≥ 256 + 17 × credits
     //   credits ≤ 256/17 = 15.05 → 15 credits per PE
-    const int TOTAL_CREDITS_PER_PE = 40;  // Total credits per PE for all memory tiles
+    const int TOTAL_CREDITS_PER_PE = 32;  // Total credits per PE for all memory tiles
     
     // Only initialize once per PE (track by PE id)
     static std::set<int> initialized_pes;
@@ -1229,7 +1271,7 @@ void ProcessingElement::consumeCredit(int mem_tile_id)
 // Return one credit when receiving a RESPONSE
 void ProcessingElement::returnCredit(int src_mem_tile)
 {
-    const int MAX_CREDITS = 40;  // Match TOTAL_CREDITS_PER_PE initialization
+    const int MAX_CREDITS = 33;  // Match TOTAL_CREDITS_PER_PE initialization
     
     // Safety check: prevent credit overflow bug
     if (total_memory_credits >= MAX_CREDITS) {
@@ -1266,7 +1308,7 @@ void ProcessingElement::printHeartbeat(int id, uint64_t cycle)
             << ", Queue: " << packet_queue.size() << endl;
         
         // Check for missing responses
-       // checkMissingResponses();
+        checkMissingResponses();
     }
 }
 
@@ -1277,36 +1319,37 @@ void ProcessingElement::checkMissingResponses()
     
     // Check for requests outstanding longer than 1000 cycles (should be ~300 cycles max)
     // If response hasn't arrived, return the credit to prevent deadlock
-    const uint64_t TIMEOUT_CYCLES = 1000;
+    const uint64_t TIMEOUT_CYCLES = 750;
     
-    std::vector<int> timed_out_requests;
+    std::vector<uint64_t> timed_out_seqs;
     
     for (const auto& entry : outstanding_requests) {
-        int fid = entry.first;
+        uint64_t seq = entry.first;  // sequence number (unique per request)
         const OutstandingRequest& req = entry.second;
         uint64_t age = cur_cycle - req.injection_cycle;
         
         if (age > TIMEOUT_CYCLES) {
-            cerr << "*** PE[" << local_id << "] TIMEOUT: feature_id=" << fid
-                 << " dst=MemTile[" << req.dst_mem_tile << "]"
-                 << " age=" << age << " cycles - RETURNING CREDIT" << endl;
+            //cerr << "*** PE[" << local_id << "] TIMEOUT: seq=" << seq
+              //   << " feature_id=" << req.feature_id
+                // << " dst=MemTile[" << req.dst_mem_tile << "]"
+                 //<< " age=" << age << " cycles - RETURNING CREDIT" << endl;
             
             // Return the credit that was consumed when this request was sent
             returnCredit(req.dst_mem_tile);
             
             // Track timeout count for this feature
-            timeout_counts_per_feature[fid]++;
+            timeout_counts_per_feature[req.feature_id]++;
             
             // Mark for removal
-            timed_out_requests.push_back(fid);
+            timed_out_seqs.push_back(seq);
         }
     }
     
-    // Remove timed-out requests from tracking maps
-    for (int fid : timed_out_requests) {
-        outstanding_requests.erase(fid);
-        request_injection_time.erase(fid);
-        request_network_entry_time.erase(fid);
+    // Remove timed-out requests from tracking map
+    // NOTE: We do NOT remove from request_injection_time or request_network_entry_time
+    // because those are indexed by feature_id and other requests with same feature_id may still be in-flight
+    for (uint64_t seq : timed_out_seqs) {
+        outstanding_requests.erase(seq);
     }
 }
 

@@ -118,6 +118,8 @@ SC_MODULE(ProcessingElement)
     bool canShotTrace(Packet & packet);	// Trace-driven packet generation
     bool isMemoryTile(int id);		// Check if a tile ID is a memory controller
     int getTracePeId(int noxim_id);	// Map Noxim tile ID to trace PE ID
+    bool allTraceEventsSent() const;    // Check if all trace events have been injected
+    uint64_t getInFlightRequests() const; // Get number of requests sent but not responded
 
     // Memory controller support
     MemoryController* memory_controller;  // DRAM controller for memory tiles
@@ -138,7 +140,8 @@ SC_MODULE(ProcessingElement)
         int dst_mem_tile;
         int feature_id;
     };
-    std::map<int, OutstandingRequest> outstanding_requests;  // feature_id -> request info
+    std::map<uint64_t, OutstandingRequest> outstanding_requests;  // seq_num -> request info (NOT feature_id!)
+    uint64_t next_request_seq;  // Unique sequence number for each request
     std::map<int, int> timeout_counts_per_feature;  // feature_id -> number of timeouts
     void checkMissingResponses();  // Check for requests that haven't received responses
     void printTimeoutStats() const;  // Print timeout statistics per feature
@@ -170,6 +173,7 @@ SC_MODULE(ProcessingElement)
 	last_injection_cycle = 0;
 	// REMOVED: next_vc_request, next_vc_response initialization
 	last_heartbeat_cycle = 0;
+	next_request_seq = 0;
 	total_requests_injected = 0;
 	total_responses_injected = 0;
 	total_e2e_latency = 0;
