@@ -580,7 +580,7 @@ void Router::perCycleUpdate()
     } else {
         // Clean up stale coalesce entries (every cycle check)
         if (GlobalParams::enable_selective_coalescing) {
-            cleanupStaleCoalesceEntries();
+           // cleanupStaleCoalesceEntries();
         }
         
         selectionStrategy->perCycleUpdate(this);
@@ -1726,7 +1726,7 @@ void Router::printOracleCoalescingStats() const
 void Router::cleanupStaleCoalesceEntries()
 {
     uint64_t cur_cycle = (uint64_t)(sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
-    const uint64_t TIMEOUT_CYCLES = 1950;
+    const uint64_t TIMEOUT_CYCLES = 790;
     
     for (int i = 0; i < COALESCE_TABLE_SIZE; i++) {
         if (!coalesce_table[i].valid) {

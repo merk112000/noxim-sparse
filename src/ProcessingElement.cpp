@@ -1310,7 +1310,7 @@ void ProcessingElement::printHeartbeat(int id, uint64_t cycle)
             << ", Queue: " << packet_queue.size() << endl;
         
         // Check for missing responses
-        checkMissingResponses();
+        //checkMissingResponses();
     }
 }
 
