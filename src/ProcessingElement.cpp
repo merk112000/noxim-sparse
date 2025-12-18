@@ -6,6 +6,7 @@
 #include <set>
 
 const unsigned int MAX_NI_QUEUE_SIZE = 64;
+const int MAX_CREDITS = 33;  // Match TOTAL_CREDITS_PER_PE initialization
 
 int ProcessingElement::randInt(int min, int max)
 {
@@ -105,13 +106,14 @@ void ProcessingElement::rxProcess()
                         sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
                     uint64_t injection_cycle = request_injection_time[feature_id];
                     uint64_t latency = cur_cycle - injection_cycle;
-                    
+
                     total_e2e_latency += latency;
                     e2e_latency_samples++;
                     if (latency > max_e2e_latency) {
                         max_e2e_latency = latency;
                     }
-                    
+
+
                     // Track PE queue delay (time from packet creation to network entry)
                     if (request_network_entry_time.count(feature_id) > 0) {
                         uint64_t network_entry = request_network_entry_time[feature_id];
@@ -122,10 +124,10 @@ void ProcessingElement::rxProcess()
                         }
                         request_network_entry_time.erase(feature_id);
                     }
-                    
+
                     // Remove from map to free memory
                     request_injection_time.erase(feature_id);
-                    
+
                     // Remove from outstanding requests tracking
                     // NOTE: outstanding_requests is indexed by sequence number, not feature_id
                     // We need to find and remove the OLDEST request with this feature_id
@@ -1235,7 +1237,7 @@ void ProcessingElement::initMemoryCredits()
     //   64 × 8 ≥ 64 × 4 + 17 × credits × 1
     //   512 ≥ 256 + 17 × credits
     //   credits ≤ 256/17 = 15.05 → 15 credits per PE
-    const int TOTAL_CREDITS_PER_PE = 32;  // Total credits per PE for all memory tiles
+    const int TOTAL_CREDITS_PER_PE = 20;  // Total credits per PE for all memory tiles
     
     // Only initialize once per PE (track by PE id)
     static std::set<int> initialized_pes;
@@ -1271,7 +1273,7 @@ void ProcessingElement::consumeCredit(int mem_tile_id)
 // Return one credit when receiving a RESPONSE
 void ProcessingElement::returnCredit(int src_mem_tile)
 {
-    const int MAX_CREDITS = 33;  // Match TOTAL_CREDITS_PER_PE initialization
+    
     
     // Safety check: prevent credit overflow bug
     if (total_memory_credits >= MAX_CREDITS) {
@@ -1319,7 +1321,7 @@ void ProcessingElement::checkMissingResponses()
     
     // Check for requests outstanding longer than 1000 cycles (should be ~300 cycles max)
     // If response hasn't arrived, return the credit to prevent deadlock
-    const uint64_t TIMEOUT_CYCLES = 750;
+    const uint64_t TIMEOUT_CYCLES = 790;
     
     std::vector<uint64_t> timed_out_seqs;
     
@@ -1335,7 +1337,9 @@ void ProcessingElement::checkMissingResponses()
                  //<< " age=" << age << " cycles - RETURNING CREDIT" << endl;
             
             // Return the credit that was consumed when this request was sent
-            returnCredit(req.dst_mem_tile);
+            if (total_memory_credits < MAX_CREDITS-1){
+            total_responses_received++;
+            returnCredit(req.dst_mem_tile);}
             
             // Track timeout count for this feature
             timeout_counts_per_feature[req.feature_id]++;

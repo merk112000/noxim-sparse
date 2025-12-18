@@ -432,6 +432,48 @@ double GlobalStats::getStaticPower()
 
 void GlobalStats::showStats(std::ostream & out, bool detailed)
 {
+
+		// --- GLOBAL END-TO-END LATENCY STATS (across all PEs) ---
+	uint64_t global_e2e_latency_sum = 0;
+	uint64_t global_e2e_latency_samples = 0;
+	uint64_t global_e2e_latency_max = 0;
+	int num_pes = 0;
+	if (GlobalParams::topology == TOPOLOGY_MESH) {
+		for (int y = 0; y < GlobalParams::mesh_dim_y; y++) {
+			for (int x = 0; x < GlobalParams::mesh_dim_x; x++) {
+				ProcessingElement* pe = noc->t[x][y]->pe;
+				if (pe && !pe->is_memory_tile && pe->e2e_latency_samples > 0) {
+					global_e2e_latency_sum += pe->total_e2e_latency;
+					global_e2e_latency_samples += pe->e2e_latency_samples;
+					if (pe->max_e2e_latency > global_e2e_latency_max) {
+						global_e2e_latency_max = pe->max_e2e_latency;
+					}
+					num_pes++;
+				}
+			}
+		}
+	} else {
+		for (int y = 0; y < GlobalParams::n_delta_tiles; y++) {
+			ProcessingElement* pe = noc->core[y]->pe;
+			if (pe && !pe->is_memory_tile && pe->e2e_latency_samples > 0) {
+				global_e2e_latency_sum += pe->total_e2e_latency;
+				global_e2e_latency_samples += pe->e2e_latency_samples;
+				if (pe->max_e2e_latency > global_e2e_latency_max) {
+					global_e2e_latency_max = pe->max_e2e_latency;
+				}
+				num_pes++;
+			}
+		}
+	}
+	if (global_e2e_latency_samples > 0) {
+		double global_avg_e2e_latency = (double)global_e2e_latency_sum / global_e2e_latency_samples;
+		double clk_ps = GlobalParams::clock_period_ps;
+		double avg_ns = global_avg_e2e_latency * clk_ps / 1000.0;
+		double max_ns = global_e2e_latency_max * clk_ps / 1000.0;
+		out << "% Global end-to-end latency: avg = " << global_avg_e2e_latency << " cycles (" << avg_ns << " ns), max = " << global_e2e_latency_max << " cycles (" << max_ns << " ns), samples = " << global_e2e_latency_samples << ", PEs = " << num_pes << endl;
+	} else {
+		out << "% Global end-to-end latency: No completed REQUEST-RESPONSE pairs across all PEs" << endl;
+	}
     if (detailed) 
     {
 	if (GlobalParams::topology == TOPOLOGY_MESH)

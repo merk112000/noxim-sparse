@@ -1217,16 +1217,17 @@ void Router::serveMcEngine()
     for (int step = 0; step < MC_ENGINE_SIZE; step++) {
         int mc_idx = (mc_rr_idx + step) % MC_ENGINE_SIZE;
         McEntry &mc = mc_engine[mc_idx];
-        
         if (!mc.valid) {
             continue;  // Entry not active
         }
-        
         if (mc.fifo.empty()) {
             cerr << "Router[" << local_id << "] ERROR: McEngine[" << mc_idx << "] valid but FIFO empty for fid=" << mc.feature_id << endl;
             continue;
         }
+        // ...existing code...
         
+        // ...existing code...
+
         // PHASE A: Check if unicast is using VCs we need (multicast bypasses reservation table)
         // FAIRNESS: Use per-entry round-robin to fairly cycle through ports
         int start_port = mc.port_rr_start;
@@ -1235,28 +1236,20 @@ void Router::serveMcEngine()
             if (!mc.port[o].needed || mc.port[o].done || mc.port[o].head_sent) {
                 continue;  // Skip if not needed, done, or HEAD already sent
             }
-            
-            // Check if we're at the HEAD flit for this output
+            // ...existing code...
             int idx = mc.port[o].next_flit_idx;
             if (idx >= (int)mc.fifo.size()) {
                 continue;
             }
-            
             Flit f = mc.fifo[idx];
             if (f.flit_type != FLIT_TYPE_HEAD) {
                 continue;  // Not at HEAD yet for this output
             }
-            
-            // Check if unicast OR another multicast has reserved this (output, VC)
-            // If anyone is using it, we must wait
+            // ...existing code...
             bool vc_in_use = false;
-            
-            // Check 1: Is another multicast already using this (o, vc)?
             if (mc_vc_busy[o][mc.port[o].vc]) {
                 vc_in_use = true;
             }
-            
-            // Check 2: Has unicast reserved this (o, vc)?
             if (!vc_in_use) {
                 for (int check_input = 0; check_input < DIRECTIONS + 2; check_input++) {
                     vector<pair<int,int>> reservations = reservation_table.getReservations(check_input);
@@ -1269,8 +1262,6 @@ void Router::serveMcEngine()
                     if (vc_in_use) break;
                 }
             }
-            
-            // Can only proceed if VC is free for both unicast and multicast
             mc.port[o].reserved = !vc_in_use;
         }
         
@@ -1735,7 +1726,7 @@ void Router::printOracleCoalescingStats() const
 void Router::cleanupStaleCoalesceEntries()
 {
     uint64_t cur_cycle = (uint64_t)(sc_time_stamp().to_double() / GlobalParams::clock_period_ps);
-    const uint64_t TIMEOUT_CYCLES = 1000;
+    const uint64_t TIMEOUT_CYCLES = 1950;
     
     for (int i = 0; i < COALESCE_TABLE_SIZE; i++) {
         if (!coalesce_table[i].valid) {

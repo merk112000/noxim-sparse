@@ -108,7 +108,7 @@ int sc_main(int arg_num, char *arg_vet[])
     
     // Run simulation with heartbeat every 100k cycles
     uint64_t heartbeat_interval = 10000;
-    uint64_t stoppage_check_interval = 100;
+    uint64_t stoppage_check_interval = 10;
     uint64_t total_cycles = GlobalParams::simulation_time;
     uint64_t cycles_run = 0;
     
@@ -135,7 +135,7 @@ int sc_main(int arg_num, char *arg_vet[])
         }
         
         // Check for early termination every 100 cycles: all trace events sent and in-flight < 10
-        if (n->allTraceEventsCompleted(15)) {
+        if (n->allTraceEventsCompleted(32)) {
             cout << "\n*** EARLY TERMINATION: All trace events sent and in-flight requests < 10 ***" << endl;
             cout << "    Stopped at cycle " << cycles_run << " (configured: " << total_cycles << ")" << endl;
             break;
@@ -233,7 +233,7 @@ int sc_main(int arg_num, char *arg_vet[])
     }
     
     // Show oracle coalescing statistics for all routers
-  /*  cout << endl << "===========================================================" << endl;
+    cout << endl << "===========================================================" << endl;
     cout << "Oracle Coalescing Statistics (Request Deduplication Potential)" << endl;
     cout << "===========================================================" << endl;
     for (int y = 0; y < GlobalParams::mesh_dim_y; y++) {
@@ -241,7 +241,7 @@ int sc_main(int arg_num, char *arg_vet[])
             n->t[x][y]->r->printOracleCoalescingStats();
             cout << endl;
         }
-    }*/
+    }
 
 
     if ((GlobalParams::max_volume_to_be_drained > 0) &&

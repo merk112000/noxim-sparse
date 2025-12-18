@@ -74,6 +74,10 @@ SC_MODULE(Router)
     Flit out_reg[DIRECTIONS + 2];               // Output register holding flit to transmit
     
     Stats stats;		                // Statistics
+    // Global end-to-end latency statistics (across all PEs)
+    uint64_t global_latency_sum = 0;     // Sum of all request latencies
+    uint64_t global_latency_count = 0;   // Number of completed requests
+    uint64_t global_latency_max = 0;     // Maximum observed latency
     Power power;
     LocalRoutingTable routing_table;		// Routing table
     ReservationTable reservation_table;		// Switch reservation table

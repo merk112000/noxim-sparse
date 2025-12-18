@@ -60,7 +60,7 @@ private:
     uint64_t first_request_cycle;       // First cycle we received a request (for accurate util calc)
     
     // DRAM timing parameters (cycles)
-    static const uint64_t DRAM_BASE_LATENCY = 210;  // L_base: minimum latency (DRAM row access)
+    static const uint64_t DRAM_BASE_LATENCY = 100;  // L_base: minimum latency (DRAM row access)
     // INTERVAL=0 for maximum bandwidth, with packet_queue backpressure to prevent deadlock
     static const uint64_t DRAM_FLIT_INJECTION_INTERVAL = 0;  // Cycles between consecutive FLIT injections (0 = back-to-back, 1 = 50%, 2 = 33%)
     static const uint64_t RESPONSE_SIZE_FLITS = 4; // Number of flits per response (changed from 3 to 4)
